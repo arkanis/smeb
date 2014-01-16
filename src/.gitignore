@@ -1,0 +1,10 @@
+*.o
+**/*.o
+*.webm
+
+smeb
+
+tests/*_test
+
+playground/ebml
+playground/ffdemuxer
