@@ -50,10 +50,23 @@ int main() {
 		perror("listen"), exit(1);
 	
 	
-	// Do the poll loop
+	// Setup stuff for the poll loop
 	server_t server = {0};
 	server.clients = hash_of(client_t);
 	server.streams = dict_of(stream_t);
+	
+	// Small helper used multiple times in the poll loop
+	void disconnect_client(int client_fd, client_p client, hash_elem_t e) {
+		shutdown(client_fd, SHUT_RDWR);
+		close(client_fd);
+		
+		client_change_state(client_fd, client, &server, NULL);
+		
+		hash_remove_elem(server.clients, e);
+	}
+	
+	// Do the poll loop
+	printf("server: willing and abel\n");
 	while (true) {
 		size_t pollfds_length = 2 + server.clients->length;
 		struct pollfd pollfds[pollfds_length];
@@ -66,9 +79,9 @@ int main() {
 			client_p client = hash_value_ptr(e);
 			
 			short events = 0;
-			if (client->read_func)
+			if (client->read)
 				events |= POLLIN;
-			if (client->write_func && client->buffer.size > 0)
+			if (client->write && !(client->flags & CLIENT_STALLED))
 				events |= POLLOUT;
 			
 			pollfds[i] = (struct pollfd){ client_fd, events, 0 };
@@ -93,74 +106,61 @@ int main() {
 		// be changed between the poll() call and here. Because of this we handle new connections
 		// at the end.
 		i = 2;
-		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e)) {
-			int client_fd = hash_key(e);
+		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e), i++) {
+			int client_fd = pollfds[i].fd;
 			client_p client = hash_value_ptr(e);
 			
-			if ( pollfds[i].revents & POLLHUP) {
-				printf("client %d disconnected by POLLHUP\n", client_fd);
-				
-				shutdown(pollfds[i].fd, SHUT_RDWR);
-				close(pollfds[i].fd);
-				
-				hash_remove_elem(server.clients, e);
-			} else {
-				if ( pollfds[i].revents & POLLERR) {
-					int error_code = 0;
-					socklen_t error_len = sizeof(error_code);
-					if ( getsockopt(pollfds[i].fd, SOL_SOCKET, SO_ERROR, &error_code, &error_len) == -1 )
-						perror("getsockopt"), exit(1);
-					errno = error_code;
-					fprintf(stderr, "client %d ", client_fd);
-					perror("");
-				}
-				
-				if ( pollfds[i].revents & POLLIN && client->read_func) {
-					ssize_t bytes_read = client->read_func(pollfds[i].fd, client, &server);
-					if (bytes_read == 0) {
-						printf("client %d disconnected\n", client_fd);
-						
-						shutdown(pollfds[i].fd, SHUT_RDWR);
-						close(pollfds[i].fd);
-						
-						hash_remove_elem(server.clients, e);
-					} else if (bytes_read == -1) {
-						perror("read"), exit(1);
-					}
-				}
-				
-				if ( pollfds[i].revents & POLLOUT && client->write_func) {
-					int result = client->write_func(pollfds[i].fd, client, &server);
-					if (result == 0) {
-						shutdown(pollfds[i].fd, SHUT_RDWR);
-						close(pollfds[i].fd);
-						
-						hash_remove_elem(server.clients, e);
-					}
+			if ( pollfds[i].revents & POLLHUP ) {
+				printf("server: client %d disconnected via POLLHUP\n", client_fd);
+				disconnect_client(client_fd, client, e);
+				continue;
+			}
+			
+			// In case of an error we disconnect the client. Not perfect but this way we
+			// at least will notice errors.
+			if ( pollfds[i].revents & POLLERR ) {
+				int error = 0;
+				socklen_t error_len = sizeof(error);
+				if ( getsockopt(client_fd, SOL_SOCKET, SO_ERROR, &error, &error_len) == -1 )
+					perror("getsockopt"), exit(1);
+				printf("server: client %d disconnected by error: %s\n", client_fd, strerror(error));
+				disconnect_client(client_fd, client, e);
+				continue;
+			}
+			
+			if ( pollfds[i].revents & POLLIN && client->read ) {
+				int result = client->read(client_fd, client, &server);
+				if (result == 0) {
+					printf("server: client %d disconnected via client func\n", client_fd);
+					disconnect_client(client_fd, client, e);
 				}
 			}
 			
-			i++;
+			if ( pollfds[i].revents & POLLOUT && client->write) {
+				int result = client->write(client_fd, client, &server);
+				if (result == 0) {
+					printf("server: client %d disconnected via client func\n", client_fd);
+					disconnect_client(client_fd, client, e);
+				}
+			}
 		}
 		
-
 		// Check for new connections
 		if (pollfds[1].revents & POLLIN) {
-			int client = accept4(http_server_fd, NULL, NULL, SOCK_NONBLOCK);
-			if (client == -1)
+			int client_fd = accept4(http_server_fd, NULL, NULL, SOCK_NONBLOCK);
+			if (client_fd == -1)
 				perror("accept4"), exit(1);
 			
-			printf("new client %d\n", client);
-			client_t c = { 0 };
-			c.read_func = client_read_http_headers;
-			hash_put(server.clients, client, client_t, c);
-			
+			printf("server: client %d connected\n", client_fd);
+			client_p client = hash_put_ptr(server.clients, client_fd);
+			memset(client, 0, sizeof(client_t));
+			client_change_state(client_fd, client, &server, &client_start_state);
 		}
 	}
 	
 	
 	// Clean up time
-	printf("cleaning up\n");
+	printf("server: cleaning up\n");
 	close(http_server_fd);
 	close(signals);
 	if ( sigprocmask(SIG_UNBLOCK, &signal_mask, NULL) == -1 )

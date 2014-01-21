@@ -33,26 +33,41 @@ typedef struct {
 } stream_t, *stream_p;
 
 
-// Per client stuff
+// Function pointers making up a client state
 typedef struct client_s client_t, *client_p;
 typedef struct server_s server_t, *server_p;
 typedef int (*client_func_t)(int client_fd, client_p client, server_p server);
 
+typedef struct {
+	client_func_t enter, read, write, leave;
+} client_state_t, *client_state_p;
+
+
+// Per client stuff
 struct client_s {
-	// If these function pointers are set we poll() for a readable or writeable
-	// connection. If data can be read or written the function pointers are called.
-	client_func_t read_func;
-	client_func_t write_func;
+	// Called when data can be read on the client socket. If it's NULL we don't
+	// even poll for readable data.
+	client_func_t read;
+	// Called when data can be written to the client socket and the client is not
+	// stalled (CLIENT_STALLED flag not set). We need the stalled flag because a
+	// connection is pretty much always writable (free space in send buffer). Just
+	// polling for a writable connection would result in 100% CPU load because the
+	// write function is called all the time only to send nothing.
+	client_func_t write;
+	// Called before the function pointers are switched to a new state. This
+	// function should clean up and free any temporary state the old read and write
+	// functions created.
+	client_func_t leave_state;
+	
+	// Flags to remember parts of the client state. Mostly used by the client
+	// functions to keep track of what has already been done. See CLIENT_* constants.
+	uint32_t flags;
 	
 	// Buffer that points to stuff to receive or send. Sometimes also used to store
 	// partial stuff.
 	buffer_t buffer;
-	// Data for a helper
-	client_func_t next_write_func;
-	
-	// These flags are used by the client functions to keep track of what has
-	// already been done. See CLIENT_* constants.
-	uint32_t flags;
+	// Next state for the client_write_buffer() helper function
+	client_state_t next_state;
 	
 	// A malloced() string containing the resource the client requested.
 	char* resource;
@@ -64,11 +79,12 @@ struct client_s {
 	list_node_p current_stream_buffer;
 };
 
-#define CLIENT_HTTP_HEADLINE_READ  (1 << 0)
-#define CLIENT_HTTP_HEADERS_READ   (1 << 1)
-#define CLIENT_IS_POST_REQUEST     (1 << 2)
-#define CLIENT_IS_AUTHORIZED       (1 << 3)
-#define CLIENT_IS_STALLED          (1 << 4)
+#define CLIENT_STALLED             (1 << 0)
+#define CLIENT_HTTP_HEADLINE_READ  (1 << 1)
+#define CLIENT_HTTP_HEADERS_READ   (1 << 2)
+#define CLIENT_IS_POST_REQUEST     (1 << 3)
+#define CLIENT_IS_AUTHORIZED       (1 << 4)
+
 
 
 // Server stuff that others need to interact with
