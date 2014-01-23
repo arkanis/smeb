@@ -19,7 +19,8 @@ typedef struct {
 	uint32_t flags;
 } stream_buffer_t, *stream_buffer_p;
 
-#define STREAM_BUFFER_KEYFRAME  (1 << 0)
+#define STREAM_BUFFER_STATIC    (1 << 0)
+#define STREAM_BUFFER_KEYFRAME  (1 << 1)
 
 
 // A video stream, one client sends the video, many others receive it
@@ -33,31 +34,9 @@ typedef struct {
 } stream_t, *stream_p;
 
 
-// Function pointers making up a client state
-typedef struct client_s client_t, *client_p;
-typedef struct server_s server_t, *server_p;
-typedef int (*client_func_t)(int client_fd, client_p client, server_p server);
-
-typedef struct {
-	client_func_t enter, read, write, leave;
-} client_state_t, *client_state_p;
-
-
 // Per client stuff
-struct client_s {
-	// Called when data can be read on the client socket. If it's NULL we don't
-	// even poll for readable data.
-	client_func_t read;
-	// Called when data can be written to the client socket and the client is not
-	// stalled (CLIENT_STALLED flag not set). We need the stalled flag because a
-	// connection is pretty much always writable (free space in send buffer). Just
-	// polling for a writable connection would result in 100% CPU load because the
-	// write function is called all the time only to send nothing.
-	client_func_t write;
-	// Called before the function pointers are switched to a new state. This
-	// function should clean up and free any temporary state the old read and write
-	// functions created.
-	client_func_t leave_state;
+typedef struct {
+	void* state;
 	
 	// Flags to remember parts of the client state. Mostly used by the client
 	// functions to keep track of what has already been done. See CLIENT_* constants.
@@ -66,8 +45,9 @@ struct client_s {
 	// Buffer that points to stuff to receive or send. Sometimes also used to store
 	// partial stuff.
 	buffer_t buffer;
-	// Next state for the client_write_buffer() helper function
-	client_state_t next_state;
+	// A pointer to be freed when the buffer has been processed, e.g. a pointer to
+	// the originally malloced block that was used as buffer.
+	void* buffer_to_free;
 	
 	// A malloced() string containing the resource the client requested.
 	char* resource;
@@ -77,20 +57,21 @@ struct client_s {
 	
 	// Pointer to the stream buffer node this client currently views
 	list_node_p current_stream_buffer;
-};
+} client_t, *client_p;
 
-#define CLIENT_STALLED             (1 << 0)
-#define CLIENT_HTTP_HEADLINE_READ  (1 << 1)
-#define CLIENT_HTTP_HEADERS_READ   (1 << 2)
-#define CLIENT_IS_POST_REQUEST     (1 << 3)
-#define CLIENT_IS_AUTHORIZED       (1 << 4)
+#define CLIENT_POLL_FOR_READ       (1 << 0)
+#define CLIENT_POLL_FOR_WRITE      (1 << 1)
 
+#define CLIENT_IS_POST_REQUEST     (1 << 2)
+#define CLIENT_IS_AUTHORIZED       (1 << 3)
+
+#define CLIENT_STALLED             (1 << 4)
 
 
 // Server stuff that others need to interact with
-struct server_s {
+typedef struct {
 	// List of all connected clients
 	hash_p clients;
 	// List of all streams
 	dict_p streams;
-};
+} server_t, *server_p;

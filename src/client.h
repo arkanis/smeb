@@ -1,5 +1,9 @@
 #pragma once
 
-extern client_state_t client_start_state;
+#include "common.h"
 
-void client_change_state(int client_fd, client_p client, server_p server, client_state_p state);
+#define CLIENT_CON_READABLE (1 << 0)
+#define CLIENT_CON_WRITABLE (1 << 1)
+#define CLIENT_CON_CLEANUP  (1 << 2)
+
+int client_handler(int client_fd, client_p client, server_p server, int flags);

@@ -36,7 +36,7 @@ int main() {
 	
 	// Setup HTTP server socket.
 	// Use SO_REUSEADDR in case we have to restart the server with clients still connected.
-	struct sockaddr_in http_bind_addr = { AF_INET, htons(1234), { INADDR_ANY }, {0} };
+	struct sockaddr_in http_bind_addr = { AF_INET, htons(12345), { INADDR_ANY }, {0} };
 	
 	int http_server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	
@@ -60,8 +60,7 @@ int main() {
 		shutdown(client_fd, SHUT_RDWR);
 		close(client_fd);
 		
-		client_change_state(client_fd, client, &server, NULL);
-		
+		client_handler(client_fd, client, &server, CLIENT_CON_CLEANUP);
 		hash_remove_elem(server.clients, e);
 	}
 	
@@ -74,18 +73,17 @@ int main() {
 		pollfds[1] = (struct pollfd){ http_server_fd,  POLLIN, 0 };
 		
 		size_t i = 2;
-		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e)) {
+		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e), i++) {
 			int client_fd = hash_key(e);
 			client_p client = hash_value_ptr(e);
 			
 			short events = 0;
-			if (client->read)
+			if (client->flags & CLIENT_POLL_FOR_READ)
 				events |= POLLIN;
-			if (client->write && !(client->flags & CLIENT_STALLED))
+			if (client->flags & CLIENT_POLL_FOR_WRITE)
 				events |= POLLOUT;
 			
 			pollfds[i] = (struct pollfd){ client_fd, events, 0 };
-			i++;
 		}
 		
 		if ( poll(pollfds, sizeof(pollfds) / sizeof(pollfds[0]), -1) == -1 )
@@ -128,18 +126,16 @@ int main() {
 				continue;
 			}
 			
-			if ( pollfds[i].revents & POLLIN && client->read ) {
-				int result = client->read(client_fd, client, &server);
-				if (result == 0) {
-					printf("server: client %d disconnected via client func\n", client_fd);
+			if ( pollfds[i].revents & POLLIN ) {
+				if ( client_handler(client_fd, client, &server, CLIENT_CON_READABLE) == -1 ) {
+					printf("server: client %d disconnected via client handler\n", client_fd);
 					disconnect_client(client_fd, client, e);
 				}
 			}
 			
-			if ( pollfds[i].revents & POLLOUT && client->write) {
-				int result = client->write(client_fd, client, &server);
-				if (result == 0) {
-					printf("server: client %d disconnected via client func\n", client_fd);
+			if ( pollfds[i].revents & POLLOUT ) {
+				if ( client_handler(client_fd, client, &server, CLIENT_CON_WRITABLE) == -1 ) {
+					printf("server: client %d disconnected via client handler\n", client_fd);
 					disconnect_client(client_fd, client, e);
 				}
 			}
@@ -154,7 +150,7 @@ int main() {
 			printf("server: client %d connected\n", client_fd);
 			client_p client = hash_put_ptr(server.clients, client_fd);
 			memset(client, 0, sizeof(client_t));
-			client_change_state(client_fd, client, &server, &client_start_state);
+			client_handler(client_fd, client, &server, 0);
 		}
 	}
 	
