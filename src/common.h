@@ -27,6 +27,8 @@ typedef struct {
 typedef struct {
 	uint32_t viewer_count;
 	list_p stream_buffers;
+	void* demuxer;
+	buffer_t header;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;

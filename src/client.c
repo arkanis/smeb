@@ -6,11 +6,16 @@
 #include <errno.h>
 
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <sys/ioctl.h>
 #include <linux/sockios.h>
 
+#include <libavformat/avformat.h>
+#include <libavutil/error.h>
+
 #include "client.h"
+#include "ebml_writer.h"
 #include "base64.h"
 
 
@@ -27,6 +32,13 @@ static void* http_request_dispatch       (client_p client, server_p server,
 	void* enter_send_stream
 );
 
+static void streamer_prepare_video_header(client_p client);
+
+
+int client_handlers_init() {
+	av_register_all();
+	return 0;
+}
 
 
 int client_handler(int client_fd, client_p client, server_p server, int flags) {
@@ -149,10 +161,25 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	enter_receive_stream:
 		if (!client->stream) {
 			client->stream = dict_put_ptr(server->streams, client->resource);
-			*client->stream = (stream_t){
-				.viewer_count = 0,
-				.stream_buffers = list_of(stream_buffer_t)
-			};
+			memset(client->stream, 0, sizeof(stream_t));
+			client->stream->stream_buffers = list_of(stream_buffer_t);
+			
+			AVFormatContext* demuxer = avformat_alloc_context();
+			demuxer->flags |= AVFMT_FLAG_NONBLOCK;
+			
+			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
+				perror("fcntl"), exit(1);
+
+			
+			char strbuf[512];
+			snprintf(strbuf, sizeof(strbuf), "pipe:%d", client_fd);
+			AVInputFormat* webm_fmt = av_find_input_format("webm");
+			int error = avformat_open_input(&demuxer, strbuf, webm_fmt, NULL);
+			if (error < 0)
+				fprintf(stderr, "avformat_open_input(): %s\n", av_make_error_string(strbuf, sizeof(strbuf), error));
+			
+			client->stream->demuxer = demuxer;
+			
 			printf("new stream at %s\n", client->resource);
 		} else {
 			printf("continuing on stream %s\n", client->resource);
@@ -169,8 +196,9 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		
 	receive_stream:
 		if (flags & CLIENT_CON_CLEANUP)
-			goto disconnect;
+			goto leave_receive_stream;
 		
+		/* av_read_frame reads fd directly as pipe, no need to read data into buffer
 		// Read incomming data into local buffer
 		int bytes_in_recv_buffer = 0;
 		if ( ioctl(client_fd, SIOCINQ, &bytes_in_recv_buffer) == -1 )
@@ -182,10 +210,38 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		if (bytes_read < 1) {
 			if (bytes_read == -1)
 				perror("read");
-			goto disconnect;
+			goto leave_receive_stream;
 		}
+		*/
 		
 	receive_stream_buffer_filled: {
+		AVPacket packet;
+		int ret = 0;
+		
+		while ( (ret = av_read_frame(client->stream->demuxer, &packet)) == 0 ) {
+			// We got at least the first frame so the demuxer read the video header and knows
+			// what streams are in the video. All the info we need to build our own initial
+			// stream header.
+			if (!client->stream->header.ptr)
+				streamer_prepare_video_header(client);
+			
+			//printf("frame: stream %d, pts: %lu, dts: %lu, duration: %d, buf: %p\n", packet.stream_index, packet.pts, packet.dts, packet.duration, packet.buf);
+			//if (packet.flags & AV_PKT_FLAG_KEY && packet.stream_index == 0)
+			//	printf("keyframe: stream %d, pts: %lu, dts: %lu, duration: %d, buf: %p\n", packet.stream_index, packet.pts, packet.dts, packet.duration, packet.buf);
+			
+			av_free_packet(&packet);
+		}
+		
+		if (ret == AVERROR(EAGAIN)) {
+			printf("end of data for now\n");
+			goto return_to_server_to_poll_for_io;
+		} else if (ret != 0) {
+			char strbuf[512];
+			fprintf(stderr, "av_read_frame(): %s\n", av_make_error_string(strbuf, sizeof(strbuf), ret));
+			goto return_to_server_to_poll_for_io;
+		}
+		
+		
 		// Create a new stream buffer with new data
 		stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
 		memset(stream_buffer, 0, sizeof(stream_buffer_t));
@@ -197,6 +253,32 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		fclose(f);
 		
 		printf("receive stream: received %zu bytes, put %zu into new stream buffer\n", local_buffer.size, stream_buffer->size);
+		
+		/*
+		// Calculate size for HTTP chunked encoding encapsulation
+		int data_size_bits = sizeof(bytes_in_recv_buffer) * 8 - __builtin_clrsb(bytes_in_recv_buffer);
+		// The "+ 3" makes sure the integer devision rounds up, so 1 bit results in 1 byte instead of 0.25 = 0 bytes.
+		int required_hex_digits = (data_size_bits + 3) / 4;
+		size_t len_of_crlf = 2;
+		size_t http_encapsulated_size = required_hex_digits + len_of_crlf + bytes_in_recv_buffer + len_of_crlf;
+		
+		stream_buffer->ptr = malloc(http_encapsulated_size);
+		snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", http_encapsulated_size);
+		ssize_t bytes_read = read(client_fd, stream_buffer->ptr + required_hex_digits + len_of_crlf, bytes_in_recv_buffer);
+		if (bytes_read < 1) {
+			list_remove_last(client->stream->stream_buffers);
+			
+			if (bytes_read == -1)
+				perror("read");
+			
+			return 0;
+		}
+		
+		stream_buffer->ptr[http_encapsulated_size - 2] = '\r';
+		stream_buffer->ptr[http_encapsulated_size - 1] = '\n';
+		stream_buffer->size = http_encapsulated_size;
+		printf("received %zd stream bytes (%zu bytes encapsulated)\n", bytes_read, http_encapsulated_size);
+		*/
 		
 		// Update all clients of this stream that already ran out of data
 		for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
@@ -214,6 +296,10 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		goto return_to_server_to_poll_for_io;
 	}
 	
+	leave_receive_stream:
+		avformat_close_input(client->stream->demuxer);
+		goto disconnect;
+	
 	
 	
 	// State that sends stream buffers to the viewers of a stream.
@@ -225,28 +311,42 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		client->flags |= CLIENT_POLL_FOR_WRITE;
 		client->flags &= ~CLIENT_POLL_FOR_READ;
 		
-		// Create a new stream buffer node for the initial HTTP response and
-		// wire it up as the first buffer the client sends, followed by the
-		// latest buffer of the stream.
-		list_node_p node = malloc(sizeof(list_node_t) + sizeof(stream_buffer_t));
-		node->next = client->stream->stream_buffers->last;
-		node->prev = NULL;
-		client->current_stream_buffer = node;
 		
-		stream_buffer_p stream_buffer = list_value_ptr(node);
-		stream_buffer->ptr = ""
+		// Create a new stream buffer node for the initial HTTP response and
+		// video header and wire them up as the first buffers the client sends,
+		// followed by the latest buffer of the stream.
+		list_node_p http_header_node = list_new_node(client->stream->stream_buffers);
+		list_node_p video_header_node = list_new_node(client->stream->stream_buffers);
+		
+		http_header_node->prev = NULL;
+		http_header_node->next = video_header_node;
+		
+		stream_buffer_p http_header_buffer = list_value_ptr(http_header_node);
+		http_header_buffer->ptr = ""
 			"HTTP/1.1 200 OK\r\n"
 			"Server: smeb v1.0.0\r\n"
 			"Transfer-Encoding: chunked\r\n"
 			"Connection: close\r\n"
 			"Content-Type: text/plain\r\n"
 			"\r\n";
-		stream_buffer->size = strlen(stream_buffer->ptr);
-		stream_buffer->refcount = 0;
-		stream_buffer->flags = STREAM_BUFFER_STATIC;
+		http_header_buffer->size = strlen(http_header_buffer->ptr);
+		http_header_buffer->refcount = 0;
+		http_header_buffer->flags = STREAM_BUFFER_STATIC;
 		
-		client->buffer.ptr  = stream_buffer->ptr;
-		client->buffer.size = stream_buffer->size;
+		
+		video_header_node->prev = NULL;
+		video_header_node->next = client->stream->stream_buffers->last;
+		
+		stream_buffer_p video_header_buffer = list_value_ptr(video_header_node);
+		video_header_buffer->ptr = client->stream->header.ptr;
+		video_header_buffer->size = client->stream->header.size;
+		video_header_buffer->refcount = 0;
+		video_header_buffer->flags = STREAM_BUFFER_STATIC;
+		
+		
+		client->current_stream_buffer = http_header_node;
+		client->buffer.ptr  = http_header_buffer->ptr;
+		client->buffer.size = http_header_buffer->size;
 	}
 		
 	send_stream:
@@ -416,6 +516,86 @@ static void* http_request_dispatch(client_p client, server_p server,
 	return enter_send_buffer_and_disconnect;
 }
 
+
+static void streamer_prepare_video_header(client_p client) {
+	AVFormatContext* demuxer = client->stream->demuxer;
+	
+	FILE* f = open_memstream(&client->stream->header.ptr, &client->stream->header.size);
+	off_t o1, o2, o3, o4;
+	
+	o1 = ebml_element_start(f, MKV_EBML);
+		ebml_element_string(f, MKV_DocType, "webm");
+	ebml_element_end(f, o1);
+	
+	// Should actually be an element with unknown size but the ebml viewer program
+	// can't handle it. Therefore disabled for easier debugging.
+	//ebml_element_start_unkown_data_size(f, MKV_Segment);
+	ebml_element_start_unkown_data_size(f, MKV_Segment);
+		o2 = ebml_element_start(f, MKV_Info);
+			ebml_element_uint(f, MKV_TimecodeScale, 1000000);
+			ebml_element_string(f, MKV_MuxingApp, "smeb v0.1");
+			ebml_element_string(f, MKV_WritingApp, "smeb v0.1");
+		ebml_element_end(f, o2);
+		
+		o2 = ebml_element_start(f, MKV_Tracks);
+			
+			printf("stream: found %d tracks:\n", demuxer->nb_streams);
+			for(size_t i = 0; i < demuxer->nb_streams; i++) {
+				AVStream* stream = demuxer->streams[i];
+				
+				o3 = ebml_element_start(f, MKV_TrackEntry);
+					ebml_element_uint(f, MKV_TrackNumber, i);
+					ebml_element_uint(f, MKV_TrackUID, i);
+					ebml_element_uint(f, MKV_FlagLacing, 1);
+					ebml_element_string(f, MKV_Language, "und");
+					
+					switch (stream->codec->codec_type) {
+						case AVMEDIA_TYPE_VIDEO:
+							printf("   video, w: %d, h: %d, sar: %d/%d, %dx%d\n",
+								stream->codec->width, stream->codec->height, stream->sample_aspect_ratio.num, stream->sample_aspect_ratio.den,
+								stream->codec->width * stream->sample_aspect_ratio.num / stream->sample_aspect_ratio.den, stream->codec->height);
+							
+							if (stream->codec->codec_id != AV_CODEC_ID_VP8)
+								printf("  UNSUPPORTED CODEC!\n");
+							
+							ebml_element_uint(f, MKV_TrackType, MKV_TrackType_Video);
+							ebml_element_string(f, MKV_CodecID, "V_VP8");
+							
+							o4 = ebml_element_start(f, MKV_Video);
+								ebml_element_uint(f, MKV_PixelWidth, stream->codec->width);
+								ebml_element_uint(f, MKV_PixelHeight, stream->codec->height);
+								ebml_element_uint(f, MKV_DisplayWidth, stream->codec->width * stream->sample_aspect_ratio.num / stream->sample_aspect_ratio.den);
+								ebml_element_uint(f, MKV_DisplayHeight, stream->codec->height);
+								ebml_element_uint(f, MKV_DisplayUnit, MKV_DisplayUnit_DisplayAspectRatio);
+							ebml_element_end(f, o4);
+							
+							break;
+						case AVMEDIA_TYPE_AUDIO:
+							printf("   audio, %d channels, sampel rate: %d, bits per sample: %d\n",
+								stream->codec->channels, stream->codec->sample_rate, stream->codec->bits_per_coded_sample);
+							
+							if (stream->codec->codec_id != AV_CODEC_ID_VORBIS)
+								printf("  UNSUPPORTED CODEC!\n");
+							
+							ebml_element_uint(f, MKV_TrackType, MKV_TrackType_Audio);
+							ebml_element_string(f, MKV_CodecID, "A_VORBIS");
+							
+							o4 = ebml_element_start(f, MKV_Audio);
+								ebml_element_float(f, MKV_SamplingFrequency, stream->codec->sample_rate);
+								ebml_element_uint(f, MKV_Channels, stream->codec->channels);
+								ebml_element_uint(f, MKV_BitDepth, stream->codec->bits_per_coded_sample);
+							ebml_element_end(f, o4);
+							
+							break;
+						default:
+							break;
+					}
+				ebml_element_end(f, o3);
+			}
+			
+		ebml_element_end(f, o2);
+	fclose(f);
+}
 
 
 //

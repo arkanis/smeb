@@ -15,8 +15,18 @@ CFLAGS := $(CFLAGS) -g
 # Real applications, object files are created by implicit rules
 #
 
+smeb: CPPFLAGS = -I/home/steven/Software/video/ffmpeg
+smeb: LDLIBS = \
+	~/Software/video/ffmpeg/libavformat/libavformat.a \
+	~/Software/video/ffmpeg/libavcodec/libavcodec.a \
+	~/Software/video/ffmpeg/libavutil/libavutil.a \
+	~/Software/video/libvpx/libvpx.a \
+	~/Software/video/x264/libx264.a \
+	-pthread -lm -lz -lfaac `pkg-config --libs vorbis libva theora theoraenc vorbisenc`
 smeb: client.o ebml_writer.o array.o hash.o list.o base64.o
 
+smebs: smeb
+	strip smeb
 
 #
 # Tests

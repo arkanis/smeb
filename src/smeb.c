@@ -34,6 +34,9 @@ int main() {
 		perror("signalfd"), exit(1);
 	
 	
+	client_handlers_init();
+	
+	
 	// Setup HTTP server socket.
 	// Use SO_REUSEADDR in case we have to restart the server with clients still connected.
 	struct sockaddr_in http_bind_addr = { AF_INET, htons(12345), { INADDR_ANY }, {0} };
