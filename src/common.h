@@ -7,7 +7,7 @@
 // Simple buffer to handle memory blocks
 typedef struct {
 	char*  ptr;
-	size_t size;
+	size_t size, filled;
 } buffer_t, *buffer_p;
 
 
@@ -27,7 +27,6 @@ typedef struct {
 typedef struct {
 	uint32_t viewer_count;
 	list_p stream_buffers;
-	void* demuxer;
 	buffer_t header;
 	
 	// For later

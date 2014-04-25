@@ -11,9 +11,6 @@
 #include <sys/ioctl.h>
 #include <linux/sockios.h>
 
-#include <libavformat/avformat.h>
-#include <libavutil/error.h>
-
 #include "client.h"
 #include "ebml_writer.h"
 #include "base64.h"
@@ -36,7 +33,6 @@ static void streamer_prepare_video_header(client_p client);
 
 
 int client_handlers_init() {
-	av_register_all();
 	return 0;
 }
 
@@ -164,21 +160,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			memset(client->stream, 0, sizeof(stream_t));
 			client->stream->stream_buffers = list_of(stream_buffer_t);
 			
-			AVFormatContext* demuxer = avformat_alloc_context();
-			demuxer->flags |= AVFMT_FLAG_NONBLOCK;
-			
 			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
 				perror("fcntl"), exit(1);
-
-			
-			char strbuf[512];
-			snprintf(strbuf, sizeof(strbuf), "pipe:%d", client_fd);
-			AVInputFormat* webm_fmt = av_find_input_format("webm");
-			int error = avformat_open_input(&demuxer, strbuf, webm_fmt, NULL);
-			if (error < 0)
-				fprintf(stderr, "avformat_open_input(): %s\n", av_make_error_string(strbuf, sizeof(strbuf), error));
-			
-			client->stream->demuxer = demuxer;
 			
 			printf("new stream at %s\n", client->resource);
 		} else {
@@ -188,31 +171,37 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		client->state = &&receive_stream;
 		client->flags |= CLIENT_POLL_FOR_READ;
 		
+		client->buffer.size = 64 * 1024;
+		if (local_buffer.size > client->buffer.size)
+			client->buffer.size = local_buffer.size;
+		client->buffer.filled = 0;
+		client->buffer.ptr = malloc(client->buffer.size);
+		
 		// Process any data left in the local buffer, otherwise let the server poll for more
-		if (local_buffer.size > 0)
+		if (local_buffer.size > 0) {
+			memcpy(client->buffer.ptr, local_buffer.ptr, local_buffer.size);
+			client->buffer.filled = local_buffer.size;
 			goto receive_stream_buffer_filled;
-		else
+		} else {
 			goto return_to_server_to_poll_for_io;
+		}
 		
 	receive_stream:
 		if (flags & CLIENT_CON_CLEANUP)
 			goto leave_receive_stream;
 		
-		/* av_read_frame reads fd directly as pipe, no need to read data into buffer
-		// Read incomming data into local buffer
-		int bytes_in_recv_buffer = 0;
-		if ( ioctl(client_fd, SIOCINQ, &bytes_in_recv_buffer) == -1 )
-			perror("ioctl(SIOCINQ)");
-		
-		local_buffer.size = bytes_in_recv_buffer;
-		local_buffer.ptr  = alloca(local_buffer.size);
-		ssize_t bytes_read = read(client_fd, local_buffer.ptr, bytes_in_recv_buffer);
+		// Read incomming data into client buffer
+		ssize_t bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
 		if (bytes_read < 1) {
 			if (bytes_read == -1)
 				perror("read");
+			else if (bytes_read == 0)
+				fprintf(stderr, "read: returned 0, disconnecte\n");
+			
 			goto leave_receive_stream;
 		}
-		*/
+		
+		goto receive_stream_buffer_filled;
 		
 	receive_stream_buffer_filled: {
 		AVPacket packet;
