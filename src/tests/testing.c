@@ -1,3 +1,11 @@
+/**
+
+Changelog:
+
+2014-03-21 Fixed uninitialized next pointer of report items. This caused random crashes when using the linked list of report items.
+
+*/
+
 #define _GNU_SOURCE
 
 #include <stddef.h>
@@ -80,8 +88,10 @@ bool check_func(bool expr, const char *file, const int line, const char *func_na
 	} else {
 		checks_failed++;
 		
-		// Allocate a new report item for the message and insert it at the end of the linked list
+		// Allocate a new report item for the message and insert it at the end of the linked list.
+		// Itself is the new end of list (next is NULL).
 		report_item_p item = malloc(sizeof(report_item_t));
+		item->next = NULL;
 		if (report_items == NULL) {
 			report_items = item;
 		} else {

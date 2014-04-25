@@ -38,6 +38,7 @@ tests:  tests/ebml_writer_test tests/base64_test
 	./tests/base64_test
 
 tests/ebml_writer_test: tests/testing.o ebml_writer.o
+tests/ebml_reader_test: tests/testing.o ebml_reader.o ebml_writer.o array.o
 tests/base64_test:      tests/testing.o base64.o
 
 #
@@ -45,6 +46,8 @@ tests/base64_test:      tests/testing.o base64.o
 #
 
 playground/ebml: ebml_writer.o
+
+playground/ebml_decode: array.o ebml_reader.o
 
 playground/ffdemuxer: CPPFLAGS = -I/home/steven/Software/video/ffmpeg
 playground/ffdemuxer: LDLIBS = \

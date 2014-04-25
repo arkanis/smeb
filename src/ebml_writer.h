@@ -56,6 +56,7 @@ size_t ebml_int_required_bytes(int64_t value);
 #define MKV_Name           0x536E
 #define MKV_Language       0x22B59C
 #define MKV_CodecID        0x86
+#define MKV_ColourSpace    0x2EB524
 
 #define MKV_Video          0xE0
 #define MKV_PixelWidth     0xB0
@@ -72,3 +73,7 @@ size_t ebml_int_required_bytes(int64_t value);
 #define MKV_SamplingFrequency  0xB5
 #define MKV_Channels           0x9F
 #define MKV_BitDepth           0x6264
+
+#define MKV_Cluster      0x1F43B675
+#define MKV_Timecode     0xE7
+#define MKV_SimpleBlock  0xA3
