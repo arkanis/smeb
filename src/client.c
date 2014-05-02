@@ -33,6 +33,7 @@ static void* http_request_dispatch       (client_p client, server_p server,
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
+static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size);
 
 
 int client_handlers_init() {
@@ -270,6 +271,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		// Look for any complete cluster elements and put each one into one buffer
 		ssize_t cluster_size;
 		while ( (cluster_size = streamer_try_to_extract_mkv_cluster(client->buffer.ptr, client->buffer.filled)) != -1 ) {
+			
+			streamer_inspect_cluster(client->buffer.ptr, cluster_size);
 			
 			// Calculate size for HTTP chunked encoding encapsulation
 			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(cluster_size);
@@ -693,6 +696,71 @@ static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
 	
 	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
+
+static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
+	size_t pos = 0;
+	
+	uint32_t elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
+	uint64_t elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+	
+	while (pos < buffer_size) {
+		elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
+		elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+		
+		if (elem_id == MKV_Timecode) {
+			uint64_t timecode = 0;
+			memcpy((void*)&timecode + sizeof(timecode) - elem_size, buffer_ptr + pos, elem_size);
+			timecode = __builtin_bswap64(timecode);
+			printf("cluster: <Timecode %zu bytes: %lu>\n", elem_size, timecode);
+		} else if (elem_id == MKV_SimpleBlock) {
+			size_t block_pos = pos;
+			uint64_t track_number = ebml_read_data_size(buffer_ptr + block_pos, buffer_size - block_pos, &block_pos);
+			
+			int16_t timecode;
+			memcpy(&timecode, buffer_ptr + block_pos, 2);
+			timecode = (timecode << 8) | (timecode >> 8);
+			block_pos += 2;
+			
+			uint8_t flags = *((uint8_t*)(buffer_ptr + block_pos));
+			block_pos += 1;
+			
+#			define MKV_FLAG_KEYFRAME    (0b10000000)
+#			define MKV_FLAG_INVISIBLE   (0b00001000)
+#			define MKV_FLAG_LACING      (0b00000110)
+#			define MKV_FLAG_DISCARDABLE (0b00000001)
+			
+			if (track_number == 1) {
+				printf("cluster: <SimpleBlock %5zu bytes, ", elem_size);
+					printf("header:");
+					for(size_t i = 0; i < 5; i++)
+						printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
+					printf(", ");
+				
+					printf("track: %lu, timecode: %hd, flags: 0x%02x ", track_number, timecode, flags);
+					if (flags & MKV_FLAG_KEYFRAME)
+						printf("keyframe ");
+					if (flags & MKV_FLAG_INVISIBLE)
+						printf("invisible ");
+					if (flags & MKV_FLAG_DISCARDABLE)
+						printf("discardable ");
+					
+					uint8_t lacing = (flags & MKV_FLAG_LACING) >> 1;
+					switch(lacing) {
+						case 0: printf("no lacing"); break;
+						case 1: printf("Xiph lacing"); break;
+						case 2: printf("fixed-size lacing"); break;
+						case 3: printf("EBML lacing"); break;
+					}
+				printf(">\n");				
+			}
+		} else {
+			printf("cluster: <0x%08x %zu bytes>\n", elem_id, elem_size);
+		}
+		
+		pos += elem_size;
+	}
+}
+
 
 
 //
