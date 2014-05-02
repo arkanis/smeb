@@ -67,6 +67,7 @@ typedef struct {
 #define CLIENT_IS_AUTHORIZED       (1 << 3)
 
 #define CLIENT_STALLED             (1 << 4)
+#define CLIENT_NO_KEYFRAME_YET     (1 << 5)
 
 
 // Server stuff that others need to interact with

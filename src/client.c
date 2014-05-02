@@ -33,7 +33,7 @@ static void* http_request_dispatch       (client_p client, server_p server,
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
-static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size);
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size);
 
 
 int client_handlers_init() {
@@ -272,7 +272,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		ssize_t cluster_size;
 		while ( (cluster_size = streamer_try_to_extract_mkv_cluster(client->buffer.ptr, client->buffer.filled)) != -1 ) {
 			
-			streamer_inspect_cluster(client->buffer.ptr, cluster_size);
+			bool found_keyframe = streamer_inspect_cluster(client->buffer.ptr, cluster_size);
 			
 			// Calculate size for HTTP chunked encoding encapsulation
 			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(cluster_size);
@@ -302,12 +302,19 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
 				client_p iteration_client = hash_value_ptr(e);
 				if (iteration_client->stream == client->stream && iteration_client->flags & CLIENT_STALLED) {
-					iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
-					iteration_client->buffer.ptr = stream_buffer->ptr;
-					iteration_client->buffer.size = stream_buffer->size;
-					iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
-					iteration_client->flags &= ~CLIENT_STALLED;
-					fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
+					if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET && !found_keyframe) {
+						fprintf(stderr, "[client %d]: would unstall client %d but no keyframe\n", client_fd, (int)hash_key(e));
+					} else {
+						iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
+						iteration_client->buffer.ptr = stream_buffer->ptr;
+						iteration_client->buffer.size = stream_buffer->size;
+						iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
+						iteration_client->flags &= ~(CLIENT_STALLED | CLIENT_NO_KEYFRAME_YET);
+						fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
+					}
+				//	if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET || found_keyframe)
+				//}
+				//if ( iteration_client->stream == client->stream && (iteration_client->flags & CLIENT_STALLED) && (!(iteration_client->flags & CLIENT_NO_KEYFRAME_YET) || found_keyframe) ) {
 				}
 			}
 		}
@@ -328,7 +335,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	
 	enter_send_stream: {
 		client->state = &&send_stream;
-		client->flags |= CLIENT_POLL_FOR_WRITE;
+		client->flags |= CLIENT_POLL_FOR_WRITE | CLIENT_NO_KEYFRAME_YET;
 		client->flags &= ~CLIENT_POLL_FOR_READ;
 		
 		
@@ -347,6 +354,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			"Server: smeb v1.0.0\r\n"
 			"Transfer-Encoding: chunked\r\n"
 			"Connection: close\r\n"
+			"Cache-Control: no-cache\r\n"
 			"Content-Type: video/webm\r\n"
 			"\r\n";
 		http_header_buffer->size = strlen(http_header_buffer->ptr);
@@ -697,7 +705,8 @@ static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
 	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
 
-static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
+	bool keyframe_found = false;
 	size_t pos = 0;
 	
 	uint32_t elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
@@ -718,7 +727,7 @@ static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 			
 			int16_t timecode;
 			memcpy(&timecode, buffer_ptr + block_pos, 2);
-			timecode = (timecode << 8) | (timecode >> 8);
+			timecode = ((timecode << 8) & 0xff00) | ((timecode >> 8) & 0x00ff);
 			block_pos += 2;
 			
 			uint8_t flags = *((uint8_t*)(buffer_ptr + block_pos));
@@ -729,36 +738,39 @@ static void streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 #			define MKV_FLAG_LACING      (0b00000110)
 #			define MKV_FLAG_DISCARDABLE (0b00000001)
 			
-			if (track_number == 1) {
-				printf("cluster: <SimpleBlock %5zu bytes, ", elem_size);
-					printf("header:");
-					for(size_t i = 0; i < 5; i++)
-						printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
-					printf(", ");
+			printf("cluster: <SimpleBlock %5zu bytes, ", elem_size);
+				printf("header:");
+				for(size_t i = 0; i < 5; i++)
+					printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
+				printf(", ");
 				
-					printf("track: %lu, timecode: %hd, flags: 0x%02x ", track_number, timecode, flags);
-					if (flags & MKV_FLAG_KEYFRAME)
-						printf("keyframe ");
-					if (flags & MKV_FLAG_INVISIBLE)
-						printf("invisible ");
-					if (flags & MKV_FLAG_DISCARDABLE)
-						printf("discardable ");
-					
-					uint8_t lacing = (flags & MKV_FLAG_LACING) >> 1;
-					switch(lacing) {
-						case 0: printf("no lacing"); break;
-						case 1: printf("Xiph lacing"); break;
-						case 2: printf("fixed-size lacing"); break;
-						case 3: printf("EBML lacing"); break;
-					}
-				printf(">\n");				
-			}
+				printf("track: %lu, timecode: %d, flags:", track_number, timecode);
+				if (flags & MKV_FLAG_KEYFRAME) {
+					printf(" keyframe");
+					if (track_number == 1)
+						keyframe_found = true;
+				}
+				if (flags & MKV_FLAG_INVISIBLE)
+					printf(" invisible");
+				if (flags & MKV_FLAG_DISCARDABLE)
+					printf(" discardable");
+				
+				uint8_t lacing = (flags & MKV_FLAG_LACING) >> 1;
+				switch(lacing) {
+					//case 0: printf("no lacing"); break;
+					case 1: printf("Xiph lacing"); break;
+					case 2: printf("fixed-size lacing"); break;
+					case 3: printf("EBML lacing"); break;
+				}
+			printf(">\n");
 		} else {
 			printf("cluster: <0x%08x %zu bytes>\n", elem_id, elem_size);
 		}
 		
 		pos += elem_size;
 	}
+	
+	return keyframe_found;
 }
 
 
