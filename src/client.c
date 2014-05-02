@@ -13,6 +13,7 @@
 
 #include "client.h"
 #include "ebml_writer.h"
+#include "ebml_reader.h"
 #include "base64.h"
 
 
@@ -29,7 +30,9 @@ static void* http_request_dispatch       (client_p client, server_p server,
 	void* enter_send_stream
 );
 
-static void streamer_prepare_video_header(client_p client);
+static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
+static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
+static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
 
 
 int client_handlers_init() {
@@ -168,7 +171,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			printf("continuing on stream %s\n", client->resource);
 		}
 		
-		client->state = &&receive_stream;
+		client->state = &&receive_stream_header;
 		client->flags |= CLIENT_POLL_FOR_READ;
 		
 		client->buffer.size = 64 * 1024;
@@ -181,112 +184,137 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		if (local_buffer.size > 0) {
 			memcpy(client->buffer.ptr, local_buffer.ptr, local_buffer.size);
 			client->buffer.filled = local_buffer.size;
-			goto receive_stream_buffer_filled;
+			goto receive_stream_header_buffer_filled;
 		} else {
 			goto return_to_server_to_poll_for_io;
 		}
 		
-	receive_stream:
+	receive_stream_header:
 		if (flags & CLIENT_CON_CLEANUP)
 			goto leave_receive_stream;
 		
 		// Read incomming data into client buffer
 		ssize_t bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
+		fprintf(stderr, "[client %d]: reading %zd header bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
 		if (bytes_read < 1) {
 			if (bytes_read == -1)
 				perror("read");
 			else if (bytes_read == 0)
-				fprintf(stderr, "read: returned 0, disconnecte\n");
+				fprintf(stderr, "[client %d]: read returned 0, disconnecting\n", client_fd);
 			
 			goto leave_receive_stream;
 		}
 		
-		goto receive_stream_buffer_filled;
+		client->buffer.filled += bytes_read;
+		goto receive_stream_header_buffer_filled;
 		
-	receive_stream_buffer_filled: {
-		AVPacket packet;
-		int ret = 0;
-		
-		while ( (ret = av_read_frame(client->stream->demuxer, &packet)) == 0 ) {
-			// We got at least the first frame so the demuxer read the video header and knows
-			// what streams are in the video. All the info we need to build our own initial
-			// stream header.
-			if (!client->stream->header.ptr)
-				streamer_prepare_video_header(client);
+	receive_stream_header_buffer_filled: {
+		ssize_t header_size;
+		if ( (header_size = streamer_try_to_extract_mkv_header(client->buffer.ptr, client->buffer.filled)) > 0 ) {
+			fprintf(stderr, "[client %d]: got mkv header\n", client_fd);
 			
-			//printf("frame: stream %d, pts: %lu, dts: %lu, duration: %d, buf: %p\n", packet.stream_index, packet.pts, packet.dts, packet.duration, packet.buf);
-			//if (packet.flags & AV_PKT_FLAG_KEY && packet.stream_index == 0)
-			//	printf("keyframe: stream %d, pts: %lu, dts: %lu, duration: %d, buf: %p\n", packet.stream_index, packet.pts, packet.dts, packet.duration, packet.buf);
+			// Got the complete header in the buffer, calculate size for HTTP chunked encoding encapsulation
+			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(header_size);
 			
-			av_free_packet(&packet);
-		}
-		
-		if (ret == AVERROR(EAGAIN)) {
-			printf("end of data for now\n");
+			// Store the header and add HTTP chunked encapsulation around it
+			client->stream->header.size = http_encapsulated_size;
+			client->stream->header.ptr = malloc(http_encapsulated_size);
+			
+			int enc_bytes = snprintf(client->stream->header.ptr, http_encapsulated_size, "%zx\r\n", header_size);
+			printf("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
+				enc_bytes, header_size, http_encapsulated_size, http_encapsulated_size - header_size);
+			//memset(client->stream->header.ptr + enc_bytes, 0, header_size);
+			memcpy(client->stream->header.ptr + enc_bytes, client->buffer.ptr, header_size);
+			client->stream->header.ptr[enc_bytes + header_size + 0] = '\r';
+			client->stream->header.ptr[enc_bytes + header_size + 1] = '\n';
+			
+			// Remove the header from the buffer
+			memmove(client->buffer.ptr, client->buffer.ptr + header_size, client->buffer.filled - header_size);
+			client->buffer.filled -= header_size;
+			
+			client->state = &&receive_stream;
+			client->flags |= CLIENT_POLL_FOR_READ;
+			
+			if (client->buffer.filled > 0)
+				goto receive_stream_buffer_filled;
+			else
+				goto return_to_server_to_poll_for_io;
+		} else {
+			// Header not yet complete, need more data
+			fprintf(stderr, "[client %d]: no mkv header yet\n", client_fd);
 			goto return_to_server_to_poll_for_io;
-		} else if (ret != 0) {
-			char strbuf[512];
-			fprintf(stderr, "av_read_frame(): %s\n", av_make_error_string(strbuf, sizeof(strbuf), ret));
-			goto return_to_server_to_poll_for_io;
 		}
+	}
 		
+	receive_stream: {
+		if (flags & CLIENT_CON_CLEANUP)
+			goto leave_receive_stream;
 		
-		// Create a new stream buffer with new data
-		stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
-		memset(stream_buffer, 0, sizeof(stream_buffer_t));
-		
-		stream_buffer->ptr = malloc(200);
-		FILE* f = fmemopen(stream_buffer->ptr, 200, "w");
-		fprintf(f, "%x\r\n% 8zd bytes of data\n\r\n", 8 + 15, local_buffer.size);
-		stream_buffer->size = ftell(f);
-		fclose(f);
-		
-		printf("receive stream: received %zu bytes, put %zu into new stream buffer\n", local_buffer.size, stream_buffer->size);
-		
-		/*
-		// Calculate size for HTTP chunked encoding encapsulation
-		int data_size_bits = sizeof(bytes_in_recv_buffer) * 8 - __builtin_clrsb(bytes_in_recv_buffer);
-		// The "+ 3" makes sure the integer devision rounds up, so 1 bit results in 1 byte instead of 0.25 = 0 bytes.
-		int required_hex_digits = (data_size_bits + 3) / 4;
-		size_t len_of_crlf = 2;
-		size_t http_encapsulated_size = required_hex_digits + len_of_crlf + bytes_in_recv_buffer + len_of_crlf;
-		
-		stream_buffer->ptr = malloc(http_encapsulated_size);
-		snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", http_encapsulated_size);
-		ssize_t bytes_read = read(client_fd, stream_buffer->ptr + required_hex_digits + len_of_crlf, bytes_in_recv_buffer);
+		// Read incomming data into client buffer
+		ssize_t bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
+		fprintf(stderr, "[client %d]: reading %zd cluster bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
 		if (bytes_read < 1) {
-			list_remove_last(client->stream->stream_buffers);
-			
 			if (bytes_read == -1)
 				perror("read");
+			else if (bytes_read == 0)
+				fprintf(stderr, "[client %d]: read returned 0, disconnecting\n", client_fd);
 			
-			return 0;
+			goto leave_receive_stream;
 		}
 		
-		stream_buffer->ptr[http_encapsulated_size - 2] = '\r';
-		stream_buffer->ptr[http_encapsulated_size - 1] = '\n';
-		stream_buffer->size = http_encapsulated_size;
-		printf("received %zd stream bytes (%zu bytes encapsulated)\n", bytes_read, http_encapsulated_size);
-		*/
+		client->buffer.filled += bytes_read;
+		goto receive_stream_buffer_filled;
+	}
 		
-		// Update all clients of this stream that already ran out of data
-		for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
-			client_p iteration_client = hash_value_ptr(e);
-			if (iteration_client->stream == client->stream && iteration_client->flags & CLIENT_STALLED) {
-				iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
-				iteration_client->buffer.ptr = stream_buffer->ptr;
-				iteration_client->buffer.size = stream_buffer->size;
-				iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
-				iteration_client->flags &= ~CLIENT_STALLED;
-				printf("streamer: unstalled client %d\n", (int)hash_key(e));
+	receive_stream_buffer_filled: {
+		// Look for any complete cluster elements and put each one into one buffer
+		ssize_t cluster_size;
+		while ( (cluster_size = streamer_try_to_extract_mkv_cluster(client->buffer.ptr, client->buffer.filled)) != -1 ) {
+			
+			// Calculate size for HTTP chunked encoding encapsulation
+			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(cluster_size);
+			
+			// Create a new stream buffer for the cluster
+			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
+			memset(stream_buffer, 0, sizeof(stream_buffer_t));
+			
+			// Fill the buffer with the cluster and add HTTP chunked encapsulation around it
+			stream_buffer->ptr = malloc(http_encapsulated_size);
+			stream_buffer->size = http_encapsulated_size;
+			int enc_bytes = snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", cluster_size);
+			printf("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
+				enc_bytes, cluster_size, http_encapsulated_size, http_encapsulated_size - cluster_size);
+			//memset(stream_buffer->ptr + enc_bytes, 0, cluster_size);
+			memcpy(stream_buffer->ptr + enc_bytes, client->buffer.ptr, cluster_size);
+			stream_buffer->ptr[enc_bytes + cluster_size + 0] = '\r';
+			stream_buffer->ptr[enc_bytes + cluster_size + 1] = '\n';
+			
+			// Remove the cluster from the client buffer
+			memmove(client->buffer.ptr, client->buffer.ptr + cluster_size, client->buffer.filled - cluster_size);
+			client->buffer.filled -= cluster_size;
+			
+			fprintf(stderr, "[client %d]: received %zd stream bytes (%zu bytes encapsulated)\n", client_fd, cluster_size, http_encapsulated_size);
+			
+			// Update all clients of this stream that already ran out of data
+			for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
+				client_p iteration_client = hash_value_ptr(e);
+				if (iteration_client->stream == client->stream && iteration_client->flags & CLIENT_STALLED) {
+					iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
+					iteration_client->buffer.ptr = stream_buffer->ptr;
+					iteration_client->buffer.size = stream_buffer->size;
+					iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
+					iteration_client->flags &= ~CLIENT_STALLED;
+					fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
+				}
 			}
 		}
 		
+		// No more complete cluster elments, wait for more data
 		goto return_to_server_to_poll_for_io;
 	}
 	
+	
 	leave_receive_stream:
-		avformat_close_input(client->stream->demuxer);
 		goto disconnect;
 	
 	
@@ -316,7 +344,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			"Server: smeb v1.0.0\r\n"
 			"Transfer-Encoding: chunked\r\n"
 			"Connection: close\r\n"
-			"Content-Type: text/plain\r\n"
+			"Content-Type: video/webm\r\n"
 			"\r\n";
 		http_header_buffer->size = strlen(http_header_buffer->ptr);
 		http_header_buffer->refcount = 0;
@@ -505,7 +533,7 @@ static void* http_request_dispatch(client_p client, server_p server,
 	return enter_send_buffer_and_disconnect;
 }
 
-
+/*
 static void streamer_prepare_video_header(client_p client) {
 	AVFormatContext* demuxer = client->stream->demuxer;
 	
@@ -584,6 +612,86 @@ static void streamer_prepare_video_header(client_p client) {
 			
 		ebml_element_end(f, o2);
 	fclose(f);
+}
+*/
+
+static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size) {
+	size_t buffer_pos = 0;
+	
+	uint32_t id = 0;
+	do {
+		size_t pos = 0;
+		id = ebml_read_element_id(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
+		if (pos == 0) {
+			printf("failed to read element id\n");
+			return -1;
+		}
+		buffer_pos += pos;
+		
+		pos = 0;
+		uint64_t size = ebml_read_data_size(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
+		if (pos == 0) {
+			printf("failed to read data size\n");
+			return -1;
+		}
+		buffer_pos += pos;
+		
+		if (id == MKV_Segment) {
+			printf("<Segment 0x%08lX bytes>, patching to unknown size, entering\n", size);
+			// Add a leading 0 bit for each addidional size byte, then convert to big endian so
+			// we can directly copy it over the old size.
+			uint64_t unknown_size = __builtin_bswap64(0xffffffffffffffff >> (pos - 1));
+			memcpy(buffer_ptr + buffer_pos - pos, &unknown_size, pos);
+			continue;
+		}
+		
+		if (buffer_pos + size > buffer_size) {
+			printf("failed to read element data of <0x%08X %zu bytes>\n", id, size);
+			return -1;
+		}
+		buffer_pos += size;
+		
+		printf("<0x%08X %zu bytes>\n", id, size);
+	} while (id != MKV_Tracks);
+	
+	return buffer_pos;
+}
+
+static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size) {
+	size_t buffer_pos = 0;
+	uint32_t id = 0;
+	
+	do {
+		size_t pos = 0;
+		id = ebml_read_element_id(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
+		if (pos == 0)
+			return -1;
+		buffer_pos += pos;
+		
+		pos = 0;
+		uint64_t size = ebml_read_data_size(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
+		if (pos == 0)
+			return -1;
+		buffer_pos += pos;
+		
+		if (buffer_pos + size > buffer_size)
+			return -1;
+		buffer_pos += size;
+		
+		printf("<0x%08X %zu bytes>\n", id, size);
+	} while (id != MKV_Cluster);
+	
+	return buffer_pos;
+}
+
+static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
+	// Got the complete header in the buffer, calculate size for HTTP chunked encoding encapsulation
+	int data_size_bits = sizeof(payload_size) * 8 - __builtin_clzll(payload_size);
+	// The "+ 3" makes sure the integer devision rounds up, so 1 bit results in 1 byte instead of 0.25 = 0 bytes.
+	int required_hex_digits = (data_size_bits + 3) / 4;
+	size_t len_of_crlf = 2;
+	
+	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
 
 

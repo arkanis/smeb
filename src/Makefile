@@ -16,7 +16,7 @@ CFLAGS := $(CFLAGS) -g
 #
 
 smeb: LDLIBS = -pthread -lm -lz
-smeb: client.o ebml_writer.o array.o hash.o list.o base64.o
+smeb: client.o ebml_writer.o ebml_reader.o array.o hash.o list.o base64.o
 
 
 #
