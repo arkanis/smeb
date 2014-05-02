@@ -18,7 +18,12 @@
 #include "client.h"
 
 
-int main() {
+int main(int argc, char** argv) {
+	if (argc != 2) {
+		fprintf(stderr, "usage: %s port\n", argv[0]);
+		return 1;
+	}
+	
 	// Setup SIGINT and SIGTERM to terminate our poll loop. For that we read them via a signal fd.
 	// To prevent the signals from interrupting our process we need to block them first.
 	sigset_t signal_mask;
@@ -39,7 +44,8 @@ int main() {
 	
 	// Setup HTTP server socket.
 	// Use SO_REUSEADDR in case we have to restart the server with clients still connected.
-	struct sockaddr_in http_bind_addr = { AF_INET, htons(12345), { INADDR_ANY }, {0} };
+	uint16_t port = atoi(argv[1]);
+	struct sockaddr_in http_bind_addr = { AF_INET, htons(port), { INADDR_ANY }, {0} };
 	
 	int http_server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	
@@ -68,7 +74,7 @@ int main() {
 	}
 	
 	// Do the poll loop
-	printf("server: willing and abel\n");
+	printf("server: willing and able\n");
 	while (true) {
 		size_t pollfds_length = 2 + server.clients->length;
 		struct pollfd pollfds[pollfds_length];
