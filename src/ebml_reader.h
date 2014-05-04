@@ -34,6 +34,12 @@ typedef struct {
 	void* data;
 } ebml_reader_event_t, *ebml_reader_event_p;
 
+typedef struct {
+	uint32_t id;
+	void*    data_ptr;
+	uint64_t data_size, header_size;
+} ebml_elem_t, *ebml_elem_p;
+
 #define EBML_ELEMENT_START 1
 #define EBML_ELEMENT_END   2
 #define EBML_EOF           3
@@ -46,6 +52,11 @@ bool ebml_reader_enter(ebml_reader_p reader);
 
 uint32_t ebml_read_element_id(void* buffer, size_t buffer_size, size_t* pos);
 uint64_t ebml_read_data_size(void* buffer, size_t buffer_size, size_t* pos);
+
+ebml_elem_t ebml_read_element(void* buffer, size_t buffer_size, size_t* pos);
+ebml_elem_t ebml_read_element_header(void* buffer, size_t buffer_size, size_t* pos);
+uint64_t ebml_read_uint(void* buffer, size_t buffer_size);
+int64_t ebml_read_int(void* buffer, size_t buffer_size);
 
 /*
 element_start(id, length);

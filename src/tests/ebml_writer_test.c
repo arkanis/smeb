@@ -48,73 +48,73 @@ void test_ebml_write_element_id() {
 	free(buffer_ptr);
 }
 
-void test_ebml_uint_required_bytes() {
-	check_int( ebml_uint_required_bytes(0), 1 );
-	check_int( ebml_uint_required_bytes(1), 1 );
+void test_ebml_encoded_uint_required_bytes() {
+	check_int( ebml_encoded_uint_required_bytes(0), 1 );
+	check_int( ebml_encoded_uint_required_bytes(1), 1 );
 	
-	check_int( ebml_uint_required_bytes(      0x0F), 1 );
-	check_int( ebml_uint_required_bytes(      0x7E), 1 );  // last valid 1 byte length
-	check_int( ebml_uint_required_bytes(      0x7F), 1 );  // last valid 1 byte ID
-	check_int( ebml_uint_required_bytes(    0x0FFF), 2 );
-	check_int( ebml_uint_required_bytes(    0x3FFE), 2 );  // last valid 2 byte length
-	check_int( ebml_uint_required_bytes(    0x3FFF), 2 );  // last valid 2 byte ID
-	check_int( ebml_uint_required_bytes(  0x0FFFFF), 3 );
-	check_int( ebml_uint_required_bytes(  0x1FFFFE), 3 );  // last valid 3 byte length
-	check_int( ebml_uint_required_bytes(  0x1FFFFF), 3 );  // last valid 3 byte ID
-	check_int( ebml_uint_required_bytes(0x00FFFFFF), 4 );
-	check_int( ebml_uint_required_bytes(0x0FFFFFFE), 4 );  // last valid 4 byte length
-	check_int( ebml_uint_required_bytes(0x0FFFFFFF), 4 );  // last valid 4 byte ID
+	check_int( ebml_encoded_uint_required_bytes(      0x0F), 1 );
+	check_int( ebml_encoded_uint_required_bytes(      0x7E), 1 );  // last valid 1 byte length
+	check_int( ebml_encoded_uint_required_bytes(      0x7F), 1 );  // last valid 1 byte ID
+	check_int( ebml_encoded_uint_required_bytes(    0x0FFF), 2 );
+	check_int( ebml_encoded_uint_required_bytes(    0x3FFE), 2 );  // last valid 2 byte length
+	check_int( ebml_encoded_uint_required_bytes(    0x3FFF), 2 );  // last valid 2 byte ID
+	check_int( ebml_encoded_uint_required_bytes(  0x0FFFFF), 3 );
+	check_int( ebml_encoded_uint_required_bytes(  0x1FFFFE), 3 );  // last valid 3 byte length
+	check_int( ebml_encoded_uint_required_bytes(  0x1FFFFF), 3 );  // last valid 3 byte ID
+	check_int( ebml_encoded_uint_required_bytes(0x00FFFFFF), 4 );
+	check_int( ebml_encoded_uint_required_bytes(0x0FFFFFFE), 4 );  // last valid 4 byte length
+	check_int( ebml_encoded_uint_required_bytes(0x0FFFFFFF), 4 );  // last valid 4 byte ID
 	
-	check_int( ebml_uint_required_bytes(      0x00FFFFFFFF), 5 );
-	check_int( ebml_uint_required_bytes(      0x07FFFFFFFE), 5 );  // last valid 5 byte length
-	check_int( ebml_uint_required_bytes(      0x07FFFFFFFF), 5 );  // last valid 5 byte ID
-	check_int( ebml_uint_required_bytes(    0x00FFFFFFFFFF), 6 );
-	check_int( ebml_uint_required_bytes(    0x03FFFFFFFFFE), 6 );  // last valid 6 byte length
-	check_int( ebml_uint_required_bytes(    0x03FFFFFFFFFF), 6 );  // last valid 6 byte ID
-	check_int( ebml_uint_required_bytes(  0x00FFFFFFFFFFFF), 7 );
-	check_int( ebml_uint_required_bytes(  0x01FFFFFFFFFFFE), 7 );  // last valid 7 byte length
-	check_int( ebml_uint_required_bytes(  0x01FFFFFFFFFFFF), 7 );  // last valid 7 byte ID
-	check_int( ebml_uint_required_bytes(0x000FFFFFFFFFFFFF), 8 );
-	check_int( ebml_uint_required_bytes(0x00FFFFFFFFFFFFFE), 8 );  // last valid 8 byte length
-	check_int( ebml_uint_required_bytes(0x00FFFFFFFFFFFFFF), 8 );  // last valid 8 byte ID
+	check_int( ebml_encoded_uint_required_bytes(      0x00FFFFFFFF), 5 );
+	check_int( ebml_encoded_uint_required_bytes(      0x07FFFFFFFE), 5 );  // last valid 5 byte length
+	check_int( ebml_encoded_uint_required_bytes(      0x07FFFFFFFF), 5 );  // last valid 5 byte ID
+	check_int( ebml_encoded_uint_required_bytes(    0x00FFFFFFFFFF), 6 );
+	check_int( ebml_encoded_uint_required_bytes(    0x03FFFFFFFFFE), 6 );  // last valid 6 byte length
+	check_int( ebml_encoded_uint_required_bytes(    0x03FFFFFFFFFF), 6 );  // last valid 6 byte ID
+	check_int( ebml_encoded_uint_required_bytes(  0x00FFFFFFFFFFFF), 7 );
+	check_int( ebml_encoded_uint_required_bytes(  0x01FFFFFFFFFFFE), 7 );  // last valid 7 byte length
+	check_int( ebml_encoded_uint_required_bytes(  0x01FFFFFFFFFFFF), 7 );  // last valid 7 byte ID
+	check_int( ebml_encoded_uint_required_bytes(0x000FFFFFFFFFFFFF), 8 );
+	check_int( ebml_encoded_uint_required_bytes(0x00FFFFFFFFFFFFFE), 8 );  // last valid 8 byte length
+	check_int( ebml_encoded_uint_required_bytes(0x00FFFFFFFFFFFFFF), 8 );  // last valid 8 byte ID
 }
 
-void test_ebml_int_required_bytes() {
-	check_int( ebml_int_required_bytes(0), 1 );
-	check_int( ebml_int_required_bytes(1), 1 );
-	check_int( ebml_int_required_bytes(-1), 1 );
+void test_ebml_encoded_int_required_bytes() {
+	check_int( ebml_encoded_int_required_bytes(0), 1 );
+	check_int( ebml_encoded_int_required_bytes(1), 1 );
+	check_int( ebml_encoded_int_required_bytes(-1), 1 );
 	
-	check_int( ebml_int_required_bytes(       -64), 1 );  // smallest 7 bit value
-	check_int( ebml_int_required_bytes(        63), 1 );  // largest 7 bit value
-	check_int( ebml_int_required_bytes(       -65), 2 );
-	check_int( ebml_int_required_bytes(        64), 2 );
-	check_int( ebml_int_required_bytes(     -8192), 2 );  // smallest 14 bit value
-	check_int( ebml_int_required_bytes(      8191), 2 );  // largest 14 bit value
-	check_int( ebml_int_required_bytes(     -8193), 3 );
-	check_int( ebml_int_required_bytes(      8192), 3 );
-	check_int( ebml_int_required_bytes(  -1048576), 3 );  // smallest 21 bit value
-	check_int( ebml_int_required_bytes(   1048575), 3 );  // largest 21 bit value
-	check_int( ebml_int_required_bytes(  -1048577), 4 );
-	check_int( ebml_int_required_bytes(   1048576), 4 );
-	check_int( ebml_int_required_bytes(-134217728), 4 );  // smallest 28 bit value
-	check_int( ebml_int_required_bytes( 134217727), 4 );  // largest 28 bit value
-	check_int( ebml_int_required_bytes(-134217729), 5 );
-	check_int( ebml_int_required_bytes( 134217728), 5 );
+	check_int( ebml_encoded_int_required_bytes(       -64), 1 );  // smallest 7 bit value
+	check_int( ebml_encoded_int_required_bytes(        63), 1 );  // largest 7 bit value
+	check_int( ebml_encoded_int_required_bytes(       -65), 2 );
+	check_int( ebml_encoded_int_required_bytes(        64), 2 );
+	check_int( ebml_encoded_int_required_bytes(     -8192), 2 );  // smallest 14 bit value
+	check_int( ebml_encoded_int_required_bytes(      8191), 2 );  // largest 14 bit value
+	check_int( ebml_encoded_int_required_bytes(     -8193), 3 );
+	check_int( ebml_encoded_int_required_bytes(      8192), 3 );
+	check_int( ebml_encoded_int_required_bytes(  -1048576), 3 );  // smallest 21 bit value
+	check_int( ebml_encoded_int_required_bytes(   1048575), 3 );  // largest 21 bit value
+	check_int( ebml_encoded_int_required_bytes(  -1048577), 4 );
+	check_int( ebml_encoded_int_required_bytes(   1048576), 4 );
+	check_int( ebml_encoded_int_required_bytes(-134217728), 4 );  // smallest 28 bit value
+	check_int( ebml_encoded_int_required_bytes( 134217727), 4 );  // largest 28 bit value
+	check_int( ebml_encoded_int_required_bytes(-134217729), 5 );
+	check_int( ebml_encoded_int_required_bytes( 134217728), 5 );
 	
-	check_int( ebml_int_required_bytes(      -17179869184), 5 );  // smallest 35 bit value
-	check_int( ebml_int_required_bytes(       17179869183), 5 );  // largest 35 bit value
-	check_int( ebml_int_required_bytes(      -17179869185), 6 );
-	check_int( ebml_int_required_bytes(       17179869184), 6 );
-	check_int( ebml_int_required_bytes(    -2199023255552), 6 );  // smallest 42 bit value
-	check_int( ebml_int_required_bytes(     2199023255551), 6 );  // largest 42 bit value
-	check_int( ebml_int_required_bytes(    -2199023255553), 7 );
-	check_int( ebml_int_required_bytes(     2199023255552), 7 );
-	check_int( ebml_int_required_bytes(  -281474976710656), 7 );  // smallest 49 bit value
-	check_int( ebml_int_required_bytes(   281474976710655), 7 );  // largest 49 bit value
-	check_int( ebml_int_required_bytes(  -281474976710657), 8 );
-	check_int( ebml_int_required_bytes(   281474976710656), 8 );
-	check_int( ebml_int_required_bytes(-36028797018963968), 8 );  // smallest 56 bit value
-	check_int( ebml_int_required_bytes( 36028797018963967), 8 );  // largest 56 bit value
+	check_int( ebml_encoded_int_required_bytes(      -17179869184), 5 );  // smallest 35 bit value
+	check_int( ebml_encoded_int_required_bytes(       17179869183), 5 );  // largest 35 bit value
+	check_int( ebml_encoded_int_required_bytes(      -17179869185), 6 );
+	check_int( ebml_encoded_int_required_bytes(       17179869184), 6 );
+	check_int( ebml_encoded_int_required_bytes(    -2199023255552), 6 );  // smallest 42 bit value
+	check_int( ebml_encoded_int_required_bytes(     2199023255551), 6 );  // largest 42 bit value
+	check_int( ebml_encoded_int_required_bytes(    -2199023255553), 7 );
+	check_int( ebml_encoded_int_required_bytes(     2199023255552), 7 );
+	check_int( ebml_encoded_int_required_bytes(  -281474976710656), 7 );  // smallest 49 bit value
+	check_int( ebml_encoded_int_required_bytes(   281474976710655), 7 );  // largest 49 bit value
+	check_int( ebml_encoded_int_required_bytes(  -281474976710657), 8 );
+	check_int( ebml_encoded_int_required_bytes(   281474976710656), 8 );
+	check_int( ebml_encoded_int_required_bytes(-36028797018963968), 8 );  // smallest 56 bit value
+	check_int( ebml_encoded_int_required_bytes( 36028797018963967), 8 );  // largest 56 bit value
 }
 
 void test_ebml_write_data_size_automatic_bytes() {
@@ -291,6 +291,59 @@ void test_ebml_element_start_unkown_data_size() {
 	free(buffer_ptr);
 }
 
+void test_unencoded_uint_and_int_required_bytes() {
+	check_int( ebml_unencoded_uint_required_bytes(0x00), 1 );
+	check_int( ebml_unencoded_uint_required_bytes(0xff), 1 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ff), 2 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffff), 2 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffff), 3 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffff), 3 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffffff), 4 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffffff), 4 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffffffff), 5 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffffffff), 5 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffffffffff), 6 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffffffffff), 6 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffffffffffff), 7 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffffffffffff), 7 );
+	check_int( ebml_unencoded_uint_required_bytes(0x01ffffffffffffff), 8 );
+	check_int( ebml_unencoded_uint_required_bytes(0xffffffffffffffff), 8 );
+	
+	check_int( ebml_unencoded_int_required_bytes(0      ), 1 );
+	check_int( ebml_unencoded_int_required_bytes(128 - 1), 1 );
+	check_int( ebml_unencoded_int_required_bytes(128      ), 2 );
+	check_int( ebml_unencoded_int_required_bytes(32768 - 1), 2 );
+	check_int( ebml_unencoded_int_required_bytes(32768      ), 3 );
+	check_int( ebml_unencoded_int_required_bytes(8388608 - 1), 3 );
+	check_int( ebml_unencoded_int_required_bytes(8388608       ), 4 );
+	check_int( ebml_unencoded_int_required_bytes(2147483648 - 1), 4 );
+	check_int( ebml_unencoded_int_required_bytes(2147483648      ), 5 );
+	check_int( ebml_unencoded_int_required_bytes(549755813888 - 1), 5 );
+	check_int( ebml_unencoded_int_required_bytes(549755813888       ), 6 );
+	check_int( ebml_unencoded_int_required_bytes(140737488355328 - 1), 6 );
+	check_int( ebml_unencoded_int_required_bytes(140737488355328      ), 7 );
+	check_int( ebml_unencoded_int_required_bytes(36028797018963968 - 1), 7 );
+	check_int( ebml_unencoded_int_required_bytes(36028797018963968      ), 8 );
+	check_int( ebml_unencoded_int_required_bytes(9223372036854775807    ), 8 );
+	
+	check_int( ebml_unencoded_int_required_bytes( 0  ), 1 );
+	check_int( ebml_unencoded_int_required_bytes(-128), 1 );
+	check_int( ebml_unencoded_int_required_bytes(-128 - 1), 2 );
+	check_int( ebml_unencoded_int_required_bytes(-32768  ), 2 );
+	check_int( ebml_unencoded_int_required_bytes(-32768 - 1), 3 );
+	check_int( ebml_unencoded_int_required_bytes(-8388608  ), 3 );
+	check_int( ebml_unencoded_int_required_bytes(-8388608 - 1), 4 );
+	check_int( ebml_unencoded_int_required_bytes(-2147483648 ), 4 );
+	check_int( ebml_unencoded_int_required_bytes(-2147483648 - 1), 5 );
+	check_int( ebml_unencoded_int_required_bytes(-549755813888  ), 5 );
+	check_int( ebml_unencoded_int_required_bytes(-549755813888 - 1), 6 );
+	check_int( ebml_unencoded_int_required_bytes(-140737488355328 ), 6 );
+	check_int( ebml_unencoded_int_required_bytes(-140737488355328 - 1), 7 );
+	check_int( ebml_unencoded_int_required_bytes(-36028797018963968  ), 7 );
+	check_int( ebml_unencoded_int_required_bytes(-36028797018963968 - 1), 8 );
+	check_int( ebml_unencoded_int_required_bytes(-9223372036854775807  ), 8 );
+}
+
 void test_ebml_element_uint() {
 	char* buffer_ptr = NULL;
 	size_t buffer_size = 0;
@@ -300,12 +353,23 @@ void test_ebml_element_uint() {
 	
 	fflush(buffer);
 	check_int( buffer_size, 1+1+1 );
-	uint8_t expected[3] = {
+	uint8_t expected_1b[3] = {
 		0xD7,  // element ID
 		0x81,  // encoded data size
 		0x11   // dummy data
 	};
-	check_int( memcmp(buffer_ptr, expected, buffer_size), 0 );
+	check_int( memcmp(buffer_ptr, expected_1b, buffer_size), 0 );
+	rewind(buffer);
+	
+	ebml_element_uint(buffer, MKV_TrackNumber, 0x0102030405060708);
+	fflush(buffer);
+	check_int( buffer_size, 1+1+8 );
+	uint8_t expected_8b[10] = {
+		0xD7,  // element ID
+		0x88,  // encoded data size
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08  // dummy data (big endian encoded)
+	};
+	check_int( memcmp(buffer_ptr, expected_8b, buffer_size), 0 );
 	rewind(buffer);
 	
 	fclose(buffer);
@@ -327,6 +391,17 @@ void test_ebml_element_int() {
 		0xEF   // dummy data
 	};
 	check_int( memcmp(buffer_ptr, expected, buffer_size), 0 );
+	rewind(buffer);
+	
+	ebml_element_int(buffer, MKV_TrackNumber, -72623859790382856LL);
+	fflush(buffer);
+	check_int( buffer_size, 1+1+8 );
+	uint8_t expected_8b[10] = {
+		0xD7,  // element ID
+		0x88,  // encoded data size
+		0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF8  // dummy data (big endian encoded)
+	};
+	check_int( memcmp(buffer_ptr, expected_8b, buffer_size), 0 );
 	rewind(buffer);
 	
 	fclose(buffer);
@@ -399,13 +474,14 @@ void test_ebml_element_double() {
 
 int main() {
 	run(test_ebml_write_element_id);
-	run(test_ebml_uint_required_bytes);
-	run(test_ebml_int_required_bytes);
+	run(test_ebml_encoded_uint_required_bytes);
+	run(test_ebml_encoded_int_required_bytes);
 	run(test_ebml_write_data_size_automatic_bytes);
 	run(test_ebml_write_data_size_fixed_bytes);
 	run(test_ebml_write_unkown_data_size);
 	run(test_ebml_element_start_and_end);
 	run(test_ebml_element_start_unkown_data_size);
+	run(test_unencoded_uint_and_int_required_bytes);
 	run(test_ebml_element_uint);
 	run(test_ebml_element_int);
 	run(test_ebml_element_string);

@@ -162,7 +162,9 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		if (!client->stream) {
 			client->stream = dict_put_ptr(server->streams, client->resource);
 			memset(client->stream, 0, sizeof(stream_t));
+			
 			client->stream->stream_buffers = list_of(stream_buffer_t);
+			client->stream->intro_cluster = open_memstream(&client->stream->intro.ptr, &client->stream->intro.size);
 			
 			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
 				perror("fcntl"), exit(1);
@@ -670,27 +672,15 @@ static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffe
 
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size) {
 	size_t buffer_pos = 0;
-	uint32_t id = 0;
+	ebml_elem_t element;
 	
 	do {
-		size_t pos = 0;
-		id = ebml_read_element_id(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
-		if (pos == 0)
+		element = ebml_read_element(buffer_ptr, buffer_size, &buffer_pos);
+		if (element.id == 0)
 			return -1;
-		buffer_pos += pos;
 		
-		pos = 0;
-		uint64_t size = ebml_read_data_size(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
-		if (pos == 0)
-			return -1;
-		buffer_pos += pos;
-		
-		if (buffer_pos + size > buffer_size)
-			return -1;
-		buffer_pos += size;
-		
-		printf("<0x%08X %zu bytes>\n", id, size);
-	} while (id != MKV_Cluster);
+		printf("<0x%08X %zu bytes>\n", element.id, element.data_size);
+	} while (element.id != MKV_Cluster);
 	
 	return buffer_pos;
 }
@@ -709,28 +699,36 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 	bool keyframe_found = false;
 	size_t pos = 0;
 	
-	uint32_t elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
-	uint64_t elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+	// Read the cluster element header
+	ebml_read_element_header(buffer_ptr, buffer_size, &pos);
+	//uint32_t elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
+	//uint64_t elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
 	
 	while (pos < buffer_size) {
-		elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
-		elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+		ebml_elem_t e = ebml_read_element_header(buffer_ptr, buffer_size, &pos);
 		
-		if (elem_id == MKV_Timecode) {
-			uint64_t timecode = 0;
-			memcpy((void*)&timecode + sizeof(timecode) - elem_size, buffer_ptr + pos, elem_size);
-			timecode = __builtin_bswap64(timecode);
-			printf("cluster: <Timecode %zu bytes: %lu>\n", elem_size, timecode);
-		} else if (elem_id == MKV_SimpleBlock) {
+		//elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
+		//elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+		
+		if (e.id == MKV_Timecode) {
+			uint64_t timecode = ebml_read_uint(e.data_ptr, e.data_size);
+			//memcpy((void*)&timecode + sizeof(timecode) - elem_size, buffer_ptr + pos, elem_size);
+			//timecode = __builtin_bswap64(timecode);
+			printf("cluster: <Timecode %zu bytes: %lu>\n", e.data_size, timecode);
+		} else if (e.id == MKV_SimpleBlock) {
 			size_t block_pos = pos;
 			uint64_t track_number = ebml_read_data_size(buffer_ptr + block_pos, buffer_size - block_pos, &block_pos);
 			
-			int16_t timecode;
-			memcpy(&timecode, buffer_ptr + block_pos, 2);
-			timecode = ((timecode << 8) & 0xff00) | ((timecode >> 8) & 0x00ff);
+			int16_t timecode = ebml_read_int(buffer_ptr + block_pos, 2);
 			block_pos += 2;
 			
-			uint8_t flags = *((uint8_t*)(buffer_ptr + block_pos));
+			//int16_t timecode;
+			//memcpy(&timecode, buffer_ptr + block_pos, 2);
+			//timecode = ((timecode << 8) & 0xff00) | ((timecode >> 8) & 0x00ff);
+			//block_pos += 2;
+			
+			uint8_t flags = ebml_read_uint(buffer_ptr + block_pos, 1);
+			//uint8_t flags = *((uint8_t*)(buffer_ptr + block_pos));
 			block_pos += 1;
 			
 #			define MKV_FLAG_KEYFRAME    (0b10000000)
@@ -738,7 +736,7 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 #			define MKV_FLAG_LACING      (0b00000110)
 #			define MKV_FLAG_DISCARDABLE (0b00000001)
 			
-			printf("cluster: <SimpleBlock %5zu bytes, ", elem_size);
+			printf("cluster: <SimpleBlock %5zu bytes, ", e.data_size);
 				printf("header:");
 				for(size_t i = 0; i < 5; i++)
 					printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
@@ -764,10 +762,10 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 				}
 			printf(">\n");
 		} else {
-			printf("cluster: <0x%08x %zu bytes>\n", elem_id, elem_size);
+			printf("cluster: <0x%08x %zu bytes>\n", e.id, e.data_size);
 		}
 		
-		pos += elem_size;
+		pos += e.data_size;
 	}
 	
 	return keyframe_found;

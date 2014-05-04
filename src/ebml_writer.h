@@ -22,8 +22,11 @@ size_t ebml_write_data_size(FILE* file, uint64_t value, size_t bytes);
 size_t ebml_write_unkown_data_size(FILE* file);
 
 // Utility functions
-size_t ebml_uint_required_bytes(uint64_t value);
-size_t ebml_int_required_bytes(int64_t value);
+size_t ebml_encoded_uint_required_bytes(uint64_t value);
+size_t ebml_encoded_int_required_bytes(int64_t value);
+size_t ebml_unencoded_uint_required_bytes(uint64_t value);
+size_t ebml_unencoded_int_required_bytes(int64_t value);
+
 
 
 //

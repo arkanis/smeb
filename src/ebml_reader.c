@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/ioctl.h>
 
 #include "ebml_reader.h"
@@ -92,6 +93,80 @@ uint64_t ebml_read_data_size(void* buffer, size_t buffer_size, size_t* pos) {
 	*pos += byte_ptr - (uint8_t*)buffer;
 	return data_size;
 }
+
+/**
+ * Reads an EBML element (element ID, size and the element content).
+ * 
+ * Returns an element ID of 0 if the buffer doesn't contain the entire element.
+ */
+ebml_elem_t ebml_read_element(void* buffer, size_t buffer_size, size_t* buffer_pos) {
+	ebml_elem_t element = ebml_read_element_header(buffer, buffer_size, buffer_pos);
+	if (element.id != 0) {
+		if (*buffer_pos + element.header_size + element.data_size <= buffer_size)
+			*buffer_pos += element.data_size;
+		else
+			element.id = 0;
+	}
+	return element;
+}
+
+/**
+ * Reads an EBML element header (element ID and size).
+ * 
+ * Returns an element ID of 0 if the buffer doesn't contain the entire header.
+ */
+ebml_elem_t ebml_read_element_header(void* buffer, size_t buffer_size, size_t* buffer_pos) {
+	ebml_elem_t element = { 0 };
+	size_t pos = *buffer_pos;
+	
+	element.id = ebml_read_element_id(buffer + pos, buffer_size - pos, &pos);
+	if (pos == *buffer_pos)
+		return element;
+	
+	element.data_size = ebml_read_data_size(buffer + pos, buffer_size - pos, &pos);
+	if (pos == *buffer_pos) {
+		element.id = 0;
+		return element;
+	}
+	
+	element.data_ptr = buffer + pos;
+	element.header_size = pos - *buffer_pos;
+	*buffer_pos = pos;
+	
+	return element;
+}
+
+uint64_t ebml_read_uint(void* buffer, size_t buffer_size) {
+	uint64_t value = 0;
+	
+	if (buffer_size > sizeof(value))
+		return (uint64_t)-1LL;
+	
+	memcpy((void*)&value + sizeof(value) - buffer_size, buffer, buffer_size);
+	return __builtin_bswap64(value);
+}
+
+int64_t ebml_read_int(void* buffer, size_t buffer_size) {
+	int64_t value = 0;
+	
+	if (buffer_size > sizeof(value))
+		return INT64_MIN;
+	
+	memcpy((void*)&value + sizeof(value) - buffer_size, buffer, buffer_size);
+	// Convert the value from big endian to little endian
+	value = __builtin_bswap64(value);
+	// Next we need to sign extend the value to 64 bits.
+	// Shift the value bytes to the front of the 64bit value. This way a sign
+	// bit becomes the most significant bit.
+	value = value << ((sizeof(value) - buffer_size) * 8);
+	// Shift the value bytes down to where they belong. Since value is signed
+	// the higher order bits are sign extended correctly.
+	value = value >> ((sizeof(value) - buffer_size) * 8);
+	
+	return value;
+}
+
+
 
 
 bool ebml_reader_next_event(ebml_reader_p reader, ebml_reader_event_p event) {

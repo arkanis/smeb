@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdio.h>
 #include "hash.h"
 #include "list.h"
 
@@ -28,6 +29,9 @@ typedef struct {
 	uint32_t viewer_count;
 	list_p stream_buffers;
 	buffer_t header;
+	
+	FILE* intro_cluster;
+	buffer_t intro;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;

@@ -1,9 +1,11 @@
 // Required for open_memstream
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 
 #include "testing.h"
@@ -197,6 +199,65 @@ void test_next_event_nested_levels() {
 	close(fd);
 }
 
+void test_read_element_and_element_header() {
+	int fd = open(test_file_name, O_RDONLY);
+	struct stat stats;
+	if ( fstat(fd, &stats) == -1 )
+		perror("fstat");
+	
+	size_t buffer_size = stats.st_size, pos = 0;
+	void* buffer_ptr = mmap(NULL, buffer_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (buffer_ptr == MAP_FAILED)
+		perror("mmap");
+	
+	ebml_elem_t e = ebml_read_element(buffer_ptr, buffer_size, &pos);
+	check(e.id == MKV_EBML);
+	
+	e = ebml_read_element_header(buffer_ptr, buffer_size, &pos);
+	check(e.id == MKV_Segment);
+	
+	size_t info_pos = pos;
+	ebml_elem_t info = ebml_read_element(buffer_ptr, buffer_size, &pos);
+	check(info.id == MKV_Info);
+	
+		info_pos += info.header_size;
+		e = ebml_read_element(info.data_ptr, info.data_size, &info_pos);
+	
+	munmap(buffer_ptr, buffer_size);
+	close(fd);
+}
+
+void test_read_int_and_uint() {
+	char* buffer_ptr = NULL;
+	size_t buffer_size = 0, pos = 0;
+	FILE* f = open_memstream(&buffer_ptr, &buffer_size);
+		ebml_element_uint(f, MKV_TimecodeScale, 0x0102030405060708);
+		ebml_element_int(f, MKV_TimecodeScale, -1000000);
+		ebml_element_int(f, MKV_TimecodeScale, 1000000);
+	fclose(f);
+	
+	ebml_elem_t e = ebml_read_element(buffer_ptr, buffer_size, &pos);
+	check(e.id == MKV_TimecodeScale);
+	check_int(e.header_size, 3 + 1);
+	
+	uint64_t uvalue = ebml_read_uint(e.data_ptr, e.data_size);
+	check_int(uvalue, 0x0102030405060708);
+	
+	e = ebml_read_element(buffer_ptr, buffer_size, &pos);
+	check(e.id == MKV_TimecodeScale);
+	
+	int64_t ivalue = ebml_read_int(e.data_ptr, e.data_size);
+	check_int(ivalue, -1000000);
+	
+	e = ebml_read_element(buffer_ptr, buffer_size, &pos);
+	check(e.id == MKV_TimecodeScale);
+	
+	ivalue = ebml_read_int(e.data_ptr, e.data_size);
+	check_int(ivalue, 1000000);
+	
+	free(buffer_ptr);
+}
+
 
 static void write_test_file(const char* filename) {
 	FILE* f = fopen(filename, "wb");
@@ -271,7 +332,9 @@ int main() {
 	run(test_read_data_size_error_cases);
 	run(test_read_data_size_unknown_sizes);
 	run(test_next_event_root_level);
-	run(test_next_event_nested_levels);
+	///run(test_next_event_nested_levels);
+	run(test_read_element_and_element_header);
+	run(test_read_int_and_uint);
 	
 	unlink(test_file_name);
 	return show_report();

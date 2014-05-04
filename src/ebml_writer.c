@@ -45,7 +45,7 @@ void ebml_element_start_unkown_data_size(FILE* file, uint32_t element_id) {
 //
 
 void ebml_element_uint(FILE* file, uint32_t element_id, uint64_t value) {
-	size_t required_data_bytes = ebml_uint_required_bytes(value);
+	size_t required_data_bytes = ebml_unencoded_uint_required_bytes(value);
 	
 	ebml_write_element_id(file, element_id);
 	ebml_write_data_size(file, required_data_bytes, 0);
@@ -56,7 +56,7 @@ void ebml_element_uint(FILE* file, uint32_t element_id, uint64_t value) {
 }
 
 void ebml_element_int(FILE* file, uint32_t element_id, int64_t value) {
-	size_t required_data_bytes = ebml_int_required_bytes(value);
+	size_t required_data_bytes = ebml_unencoded_int_required_bytes(value);
 	
 	ebml_write_element_id(file, element_id);
 	ebml_write_data_size(file, required_data_bytes, 0);
@@ -131,7 +131,7 @@ size_t ebml_write_element_id(FILE* file, uint32_t element_id) {
  */
 size_t ebml_write_data_size(FILE* file, uint64_t value, size_t bytes) {
 	if (bytes == 0)
-		bytes = ebml_uint_required_bytes(value);
+		bytes = ebml_encoded_uint_required_bytes(value);
 	// Length to large to be encoded
 	if (bytes == 0)
 		return 0;
@@ -185,14 +185,14 @@ size_t ebml_write_unkown_data_size(FILE* file) {
  *    If the byte is in group 0 we need 8 bytes, if it's in
  *    group 7 we need 1 byte.
  */
-size_t ebml_uint_required_bytes(uint64_t value) {
+size_t ebml_encoded_uint_required_bytes(uint64_t value) {
 	// Use 1 byte to encode zero
 	if (value == 0)
 		return 1;
 	
 	int leading_zeros = __builtin_clzll(value);
 	if (leading_zeros < 8) {
-		fprintf(stderr, "EBML: Value 0x%16lx to large to encode as uint!\n", value);
+		fprintf(stderr, "EBML: Value 0x%016lx to large to encode as uint!\n", value);
 		return 0;
 	}
 	
@@ -203,10 +203,10 @@ size_t ebml_uint_required_bytes(uint64_t value) {
  * Returns the number of bytes required to encode the int value in EBML.
  * Returns 0 if the value is out of the encodable range.
  * 
- * Same logic as ebml_uint_required_bytes(). We take negative numbers into account by
- * counting the leading sign bits instead of zeros.
+ * Same logic as ebml_encoded_uint_required_bytes(). We take negative
+ * numbers into account by counting the leading sign bits instead of zeros.
  */
-size_t ebml_int_required_bytes(int64_t value) {
+size_t ebml_encoded_int_required_bytes(int64_t value) {
 	int leading_sign_bits = __builtin_clrsbll(value);
 	if (leading_sign_bits < 8) {
 		fprintf(stderr, "EBML: Value %ld out of encodable int range!\n", value);
@@ -214,4 +214,18 @@ size_t ebml_int_required_bytes(int64_t value) {
 	}
 	
 	return 8 - (leading_sign_bits - 8) / 7;
+}
+
+size_t ebml_unencoded_uint_required_bytes(uint64_t value) {
+	int leading_zeros = __builtin_clzll(value);
+	int value_bits = 64 - leading_zeros;
+	int value_bytes = (value_bits - 1) / 8 + 1;
+	return value_bytes;
+}
+
+size_t ebml_unencoded_int_required_bytes(int64_t value) {
+	int leading_sign_bits = __builtin_clrsbll(value);
+	int value_bits = 64 - leading_sign_bits;
+	int value_bytes = (value_bits - 1) / 8 + 1;
+	return value_bytes;
 }
