@@ -1,3 +1,15 @@
+/*
+
+Useful ffmpeg commands to stream sources:
+
+ffmpeg -re -i [path] -quality realtime -chunked_post 0 http://localhost:1234/test.webm
+ffmpeg -re -fflags genpts -i [path] -c copy -chunked_post 0 http://localhost:1234/test.mkv
+
+The "-fflags genpts" parameter fixes incorrectly ordered timestamps. Makes problematic videos
+work without transcoding.
+
+*/
+
 // for accept4()
 #define _GNU_SOURCE
 
