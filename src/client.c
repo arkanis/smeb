@@ -33,7 +33,7 @@ static void* http_request_dispatch       (client_p client, server_p server,
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size);
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream);
 
 
 int client_handlers_init() {
@@ -164,7 +164,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			memset(client->stream, 0, sizeof(stream_t));
 			
 			client->stream->stream_buffers = list_of(stream_buffer_t);
-			client->stream->intro_cluster = open_memstream(&client->stream->intro.ptr, &client->stream->intro.size);
+			client->stream->intro_stream = open_memstream(&client->stream->intro_buffer.ptr, &client->stream->intro_buffer.size);
 			
 			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
 				perror("fcntl"), exit(1);
@@ -274,7 +274,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		ssize_t cluster_size;
 		while ( (cluster_size = streamer_try_to_extract_mkv_cluster(client->buffer.ptr, client->buffer.filled)) != -1 ) {
 			
-			bool found_keyframe = streamer_inspect_cluster(client->buffer.ptr, cluster_size);
+			/*bool found_keyframe = */streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream);
 			
 			// Calculate size for HTTP chunked encoding encapsulation
 			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(cluster_size);
@@ -304,16 +304,16 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
 				client_p iteration_client = hash_value_ptr(e);
 				if (iteration_client->stream == client->stream && iteration_client->flags & CLIENT_STALLED) {
-					if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET && !found_keyframe) {
-						fprintf(stderr, "[client %d]: would unstall client %d but no keyframe\n", client_fd, (int)hash_key(e));
-					} else {
+					//if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET && !found_keyframe) {
+					//	fprintf(stderr, "[client %d]: would unstall client %d but no keyframe\n", client_fd, (int)hash_key(e));
+					//} else {
 						iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
 						iteration_client->buffer.ptr = stream_buffer->ptr;
 						iteration_client->buffer.size = stream_buffer->size;
 						iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
 						iteration_client->flags &= ~(CLIENT_STALLED | CLIENT_NO_KEYFRAME_YET);
 						fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
-					}
+					//}
 				//	if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET || found_keyframe)
 				//}
 				//if ( iteration_client->stream == client->stream && (iteration_client->flags & CLIENT_STALLED) && (!(iteration_client->flags & CLIENT_NO_KEYFRAME_YET) || found_keyframe) ) {
@@ -346,6 +346,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		// followed by the latest buffer of the stream.
 		list_node_p http_header_node = list_new_node(client->stream->stream_buffers);
 		list_node_p video_header_node = list_new_node(client->stream->stream_buffers);
+		list_node_p intro_cluster_node = list_new_node(client->stream->stream_buffers);
+		
 		
 		http_header_node->prev = NULL;
 		http_header_node->next = video_header_node;
@@ -365,13 +367,27 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		
 		
 		video_header_node->prev = NULL;
-		video_header_node->next = client->stream->stream_buffers->last;
+		video_header_node->next = intro_cluster_node;
 		
 		stream_buffer_p video_header_buffer = list_value_ptr(video_header_node);
 		video_header_buffer->ptr = client->stream->header.ptr;
 		video_header_buffer->size = client->stream->header.size;
 		video_header_buffer->refcount = 0;
 		video_header_buffer->flags = STREAM_BUFFER_STATIC;
+		
+		
+		intro_cluster_node->prev = NULL;
+		// Let the client stall after the intro node. This way it should pick up the next incomming buffer.
+		intro_cluster_node->next = NULL;
+		
+		stream_buffer_p intro_cluster_buffer = list_value_ptr(intro_cluster_node);
+		intro_cluster_buffer->size = streamer_calculate_http_encapsulated_size(client->stream->intro_buffer.size);
+		intro_cluster_buffer->ptr = malloc(intro_cluster_buffer->size);
+			int enc_bytes = snprintf(intro_cluster_buffer->ptr, intro_cluster_buffer->size, "%zx\r\n", client->stream->intro_buffer.size);
+			memcpy(intro_cluster_buffer->ptr + enc_bytes, client->stream->intro_buffer.ptr, client->stream->intro_buffer.size);
+			intro_cluster_buffer->ptr[enc_bytes + client->stream->intro_buffer.size + 0] = '\r';
+			intro_cluster_buffer->ptr[enc_bytes + client->stream->intro_buffer.size + 1] = '\n';
+		intro_cluster_buffer->refcount = 1;
 		
 		
 		client->current_stream_buffer = http_header_node;
@@ -695,40 +711,33 @@ static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
 	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
 
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream) {
 	bool keyframe_found = false;
 	size_t pos = 0;
+	uint64_t cluster_timecode;
+	bool show_verbose = false;
 	
 	// Read the cluster element header
 	ebml_read_element_header(buffer_ptr, buffer_size, &pos);
-	//uint32_t elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
-	//uint64_t elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
+	// Write a matching cluster element header into the intro stream
+	off_t o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
 	
 	while (pos < buffer_size) {
 		ebml_elem_t e = ebml_read_element_header(buffer_ptr, buffer_size, &pos);
 		
-		//elem_id = ebml_read_element_id(buffer_ptr + pos, buffer_size - pos, &pos);
-		//elem_size = ebml_read_data_size(buffer_ptr + pos, buffer_size - pos, &pos);
-		
 		if (e.id == MKV_Timecode) {
-			uint64_t timecode = ebml_read_uint(e.data_ptr, e.data_size);
-			//memcpy((void*)&timecode + sizeof(timecode) - elem_size, buffer_ptr + pos, elem_size);
-			//timecode = __builtin_bswap64(timecode);
-			printf("cluster: <Timecode %zu bytes: %lu>\n", e.data_size, timecode);
+			cluster_timecode = ebml_read_uint(e.data_ptr, e.data_size);
+			if (show_verbose) printf("cluster: <Timecode %zu bytes: %lu>\n", e.data_size, cluster_timecode);
+			
+			// Copy the timecode into the current intro cluster
+			ebml_element_uint(stream->intro_stream, MKV_Timecode, cluster_timecode);
 		} else if (e.id == MKV_SimpleBlock) {
 			size_t block_pos = pos;
 			uint64_t track_number = ebml_read_data_size(buffer_ptr + block_pos, buffer_size - block_pos, &block_pos);
 			
 			int16_t timecode = ebml_read_int(buffer_ptr + block_pos, 2);
 			block_pos += 2;
-			
-			//int16_t timecode;
-			//memcpy(&timecode, buffer_ptr + block_pos, 2);
-			//timecode = ((timecode << 8) & 0xff00) | ((timecode >> 8) & 0x00ff);
-			//block_pos += 2;
-			
 			uint8_t flags = ebml_read_uint(buffer_ptr + block_pos, 1);
-			//uint8_t flags = *((uint8_t*)(buffer_ptr + block_pos));
 			block_pos += 1;
 			
 #			define MKV_FLAG_KEYFRAME    (0b10000000)
@@ -736,37 +745,54 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size) {
 #			define MKV_FLAG_LACING      (0b00000110)
 #			define MKV_FLAG_DISCARDABLE (0b00000001)
 			
-			printf("cluster: <SimpleBlock %5zu bytes, ", e.data_size);
-				printf("header:");
+			if (show_verbose) printf("cluster: <SimpleBlock %5zu bytes, ", e.data_size);
+				if (show_verbose) printf("header:");
 				for(size_t i = 0; i < 5; i++)
-					printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
-				printf(", ");
+					if (show_verbose) printf(" %02hhx", *((uint8_t*)(buffer_ptr + pos + i)));
+				if (show_verbose) printf(", ");
 				
-				printf("track: %lu, timecode: %d, flags:", track_number, timecode);
+				if (show_verbose) printf("track: %lu, timecode: %d, flags:", track_number, timecode);
 				if (flags & MKV_FLAG_KEYFRAME) {
-					printf(" keyframe");
-					if (track_number == 1)
+					if (show_verbose) printf(" keyframe");
+					if (track_number == 1) {
+						// We got a keyframe! Restart the magic.
 						keyframe_found = true;
+						
+						rewind(stream->intro_stream);
+						// Write cluster element header and the timecode element
+						o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
+						ebml_element_uint(stream->intro_stream, MKV_Timecode, cluster_timecode);
+						
+						// Now continue to write all simple block elements that follow it to the intro stream
+					}
+					
+					// Write all simple blocks into the intro stream
+					fwrite(e.data_ptr - e.header_size, e.header_size + e.data_size, 1, stream->intro_stream);
 				}
 				if (flags & MKV_FLAG_INVISIBLE)
-					printf(" invisible");
+					if (show_verbose) printf(" invisible");
 				if (flags & MKV_FLAG_DISCARDABLE)
-					printf(" discardable");
+					if (show_verbose) printf(" discardable");
 				
 				uint8_t lacing = (flags & MKV_FLAG_LACING) >> 1;
 				switch(lacing) {
-					//case 0: printf("no lacing"); break;
-					case 1: printf("Xiph lacing"); break;
-					case 2: printf("fixed-size lacing"); break;
-					case 3: printf("EBML lacing"); break;
+					//case 0: if (show_verbose) printf("no lacing"); break;
+					case 1: if (show_verbose) printf("Xiph lacing"); break;
+					case 2: if (show_verbose) printf("fixed-size lacing"); break;
+					case 3: if (show_verbose) printf("EBML lacing"); break;
 				}
-			printf(">\n");
+			if (show_verbose) printf(">\n");
 		} else {
-			printf("cluster: <0x%08x %zu bytes>\n", e.id, e.data_size);
+			if (show_verbose) printf("cluster: <0x%08x %zu bytes>\n", e.id, e.data_size);
 		}
 		
 		pos += e.data_size;
 	}
+	
+	// End the cluster and make sure the intro buffer can be used
+	ebml_element_end(stream->intro_stream, o1);
+	fflush(stream->intro_stream);
+	if (show_verbose) printf("intro buffer size: %zu\n", stream->intro_buffer.size);
 	
 	return keyframe_found;
 }

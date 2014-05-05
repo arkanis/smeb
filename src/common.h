@@ -30,8 +30,8 @@ typedef struct {
 	list_p stream_buffers;
 	buffer_t header;
 	
-	FILE* intro_cluster;
-	buffer_t intro;
+	FILE* intro_stream;
+	buffer_t intro_buffer;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;
