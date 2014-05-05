@@ -254,6 +254,31 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			goto leave_receive_stream;
 		
 		// Read incomming data into client buffer
+		ssize_t bytes_read = 0;
+		while(true) {
+			// First increase buffer space if the buffer is full
+			if (client->buffer.filled == client->buffer.size) {
+				client->buffer.size *= 2;
+				client->buffer.ptr = realloc(client->buffer.ptr, client->buffer.size);
+				fprintf(stderr, "[client %d]: increased client buffer to %zu bytes\n", client_fd, client->buffer.size);
+			}
+			
+			bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
+			if (bytes_read > 0) {
+				client->buffer.filled += bytes_read;
+				fprintf(stderr, "[client %d]: reading %zd cluster bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
+			} else if (bytes_read == -1 && errno == EWOULDBLOCK) {
+				// No more data in this sockets receive buffer
+				break;
+			} else if (bytes_read == 0) {
+				fprintf(stderr, "[client %d]: read returned 0, disconnecting\n", client_fd);
+				goto leave_receive_stream;
+			} else {
+				perror("read");
+				goto leave_receive_stream;
+			}
+		}
+		/*
 		ssize_t bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
 		fprintf(stderr, "[client %d]: reading %zd cluster bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
 		if (bytes_read < 1) {
@@ -266,6 +291,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		}
 		
 		client->buffer.filled += bytes_read;
+		*/
 		goto receive_stream_buffer_filled;
 	}
 		
