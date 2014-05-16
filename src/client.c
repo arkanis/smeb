@@ -415,7 +415,6 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			intro_cluster_buffer->ptr[enc_bytes + client->stream->intro_buffer.size + 1] = '\n';
 		intro_cluster_buffer->refcount = 1;
 		
-		
 		client->current_stream_buffer = http_header_node;
 		client->buffer.ptr  = http_header_buffer->ptr;
 		client->buffer.size = http_header_buffer->size;
@@ -784,17 +783,21 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, strea
 						// We got a keyframe! Restart the magic.
 						keyframe_found = true;
 						
-						rewind(stream->intro_stream);
+						fclose(stream->intro_stream);
+						free(stream->intro_buffer.ptr);
+						stream->intro_stream = open_memstream(&stream->intro_buffer.ptr, &stream->intro_buffer.size);
+						
 						// Write cluster element header and the timecode element
 						o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
 						ebml_element_uint(stream->intro_stream, MKV_Timecode, cluster_timecode);
 						
 						// Now continue to write all simple block elements that follow it to the intro stream
 					}
-					
-					// Write all simple blocks into the intro stream
-					fwrite(e.data_ptr - e.header_size, e.header_size + e.data_size, 1, stream->intro_stream);
 				}
+				
+				// Write all simple blocks into the intro stream
+				fwrite(e.data_ptr - e.header_size, e.header_size + e.data_size, 1, stream->intro_stream);
+				
 				if (flags & MKV_FLAG_INVISIBLE)
 					if (show_verbose) printf(" invisible");
 				if (flags & MKV_FLAG_DISCARDABLE)
