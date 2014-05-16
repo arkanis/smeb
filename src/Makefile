@@ -41,6 +41,8 @@ playground/ebml: ebml_writer.o
 
 playground/ebml_decode: array.o ebml_reader.o
 
+playground/ebml_inspector: ebml_reader.o array.o hash.o
+
 playground/ffdemuxer: CPPFLAGS = -I/home/steven/Software/video/ffmpeg
 playground/ffdemuxer: LDLIBS = \
 	~/Software/video/ffmpeg/libavformat/libavformat.a \
