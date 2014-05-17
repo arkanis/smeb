@@ -34,8 +34,8 @@ ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -th
 
 
 int main(int argc, char** argv) {
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s port\n", argv[0]);
+	if (argc != 3) {
+		fprintf(stderr, "usage: %s bind-addr port\n", argv[0]);
 		return 1;
 	}
 	
@@ -59,8 +59,9 @@ int main(int argc, char** argv) {
 	
 	// Setup HTTP server socket.
 	// Use SO_REUSEADDR in case we have to restart the server with clients still connected.
-	uint16_t port = atoi(argv[1]);
+	uint16_t port = atoi(argv[2]);
 	struct sockaddr_in http_bind_addr = { AF_INET, htons(port), { INADDR_ANY }, {0} };
+	inet_pton(AF_INET, argv[1], &http_bind_addr.sin_addr);
 	
 	int http_server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	
