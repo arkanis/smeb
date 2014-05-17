@@ -27,10 +27,10 @@ void print_int(void* buffer_ptr, size_t buffer_size) {
 void print_simple_block(void* buffer_ptr, size_t buffer_size) {
 	size_t block_pos = 0;
 	uint64_t track_number = ebml_read_data_size(buffer_ptr + block_pos, buffer_size - block_pos, &block_pos);
-	
+	/*
 	if (track_number != 1)
 		return;
-	
+	*/
 	int16_t timecode = ebml_read_int(buffer_ptr + block_pos, 2);
 	block_pos += 2;
 	uint8_t flags = ebml_read_uint(buffer_ptr + block_pos, 1);

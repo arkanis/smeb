@@ -9,3 +9,4 @@ tests/*_test
 playground/ebml
 playground/ffdemuxer
 playground/ebml_decode
+playground/ebml_inspector
