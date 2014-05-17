@@ -10,9 +10,9 @@
  * Writes the element ID and a 4 byte zero data size to reserve space for the proper data
  * size. The offset to this 4 byte space is returned.
  */
-off_t ebml_element_start(FILE* file, uint32_t element_id) {
+long ebml_element_start(FILE* file, uint32_t element_id) {
 	ebml_write_element_id(file, element_id);
-	off_t length_offset = ftello(file);
+	long length_offset = ftell(file);
 	ebml_write_data_size(file, 0, 4);
 	return length_offset;
 }
@@ -22,13 +22,13 @@ off_t ebml_element_start(FILE* file, uint32_t element_id) {
  * the number of bytes written since the elment has been started and writes them to the
  * 4 byte space reserved for the element size.
  */
-void ebml_element_end(FILE* file, off_t offset) {
-	off_t current_offset = ftello(file);
+void ebml_element_end(FILE* file, long offset) {
+	long current_offset = ftell(file);
 	
-	fseeko(file, offset, SEEK_SET);
+	fseek(file, offset, SEEK_SET);
 	ebml_write_data_size(file, current_offset - offset - 4, 4);
 	
-	fseeko(file, current_offset, SEEK_SET);
+	fseek(file, current_offset, SEEK_SET);
 }
 
 /**

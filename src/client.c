@@ -1,3 +1,6 @@
+// For open_memstream() and strdup()
+#define _GNU_SOURCE
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -10,6 +13,7 @@
 
 #include <sys/ioctl.h>
 #include <linux/sockios.h>
+#include <alloca.h>
 
 #include "client.h"
 #include "ebml_writer.h"
@@ -604,7 +608,7 @@ static void streamer_prepare_video_header(client_p client) {
 	AVFormatContext* demuxer = client->stream->demuxer;
 	
 	FILE* f = open_memstream(&client->stream->header.ptr, &client->stream->header.size);
-	off_t o1, o2, o3, o4;
+	long o1, o2, o3, o4;
 	
 	o1 = ebml_element_start(f, MKV_EBML);
 		ebml_element_string(f, MKV_DocType, "webm");
@@ -759,9 +763,9 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, strea
 	// Read the cluster element header
 	ebml_read_element_header(buffer_ptr, buffer_size, &pos);
 	// Write a matching cluster element header into the intro stream
-	off_t o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
+	long o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
 	// Write cluster element header into the patched buffer stream
-	off_t pbo1 = ebml_element_start(pb, MKV_Cluster);
+	long pbo1 = ebml_element_start(pb, MKV_Cluster);
 	
 	while (pos < buffer_size) {
 		ebml_elem_t e = ebml_read_element_header(buffer_ptr, buffer_size, &pos);

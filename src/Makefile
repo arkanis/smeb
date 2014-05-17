@@ -3,7 +3,7 @@
 # for connection handling functions. Simple functions don't use all parameters but need
 # them in the signature. Better than putting fake assignments in the code.
 CC = gcc
-CFLAGS = -std=gnu99 -Werror -Wall -Wextra -Wno-unused-parameter
+CFLAGS = -std=c99 -Werror -Wall -Wextra -Wno-unused-parameter
 
 # Use a simply expanded variable to avoid endless recursion in value substitution, see
 # http://www.gnu.org/savannah-checkouts/gnu/make/manual/html_node/Flavors.html

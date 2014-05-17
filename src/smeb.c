@@ -8,6 +8,9 @@ ffmpeg -re -fflags genpts -i [path] -c copy -chunked_post 0 http://localhost:123
 The "-fflags genpts" parameter fixes incorrectly ordered timestamps. Makes problematic videos
 work without transcoding.
 
+ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -threads 3 -chunked_post 0 http://localhost:1234/test.webm
+
+
 */
 
 // for accept4()

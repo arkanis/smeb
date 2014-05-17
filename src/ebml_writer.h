@@ -4,9 +4,9 @@
 #include <stdint.h>
 
 // Functions to start and end elements that should contain other elements
-off_t ebml_element_start                 (FILE* file, uint32_t element_id);
-void  ebml_element_end                   (FILE* file, off_t offset);
-void  ebml_element_start_unkown_data_size(FILE* file, uint32_t element_id);
+long ebml_element_start                 (FILE* file, uint32_t element_id);
+void ebml_element_end                   (FILE* file, long offset);
+void ebml_element_start_unkown_data_size(FILE* file, uint32_t element_id);
 
 // Scalar element functions
 void ebml_element_uint  (FILE* file, uint32_t element_id, uint64_t    value);
