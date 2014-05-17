@@ -116,7 +116,8 @@ ebml_elem_t ebml_read_element(void* buffer, size_t buffer_size, size_t* buffer_p
  * Returns an element ID of 0 if the buffer doesn't contain the entire header.
  */
 ebml_elem_t ebml_read_element_header(void* buffer, size_t buffer_size, size_t* buffer_pos) {
-	ebml_elem_t element = { 0 };
+	ebml_elem_t element;
+	memset(&element, 0, sizeof(ebml_elem_t));
 	size_t pos = *buffer_pos;
 	
 	element.id = ebml_read_element_id(buffer + pos, buffer_size - pos, &pos);

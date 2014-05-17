@@ -56,7 +56,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			goto free_client_buffer_and_disconnect;
 	
 	// Temporary variables used by several states
-	buffer_t local_buffer = { 0 };
+	buffer_t local_buffer = { NULL, 0, 0 };
 	ssize_t  line_length  = 0;
 	
 	// Jump to the current state

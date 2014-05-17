@@ -76,7 +76,8 @@ int main(int argc, char** argv) {
 	
 	
 	// Setup stuff for the poll loop
-	server_t server = {0};
+	server_t server;
+	memset(&server, 0, sizeof(server));
 	server.clients = hash_of(client_t);
 	server.streams = dict_of(stream_t);
 	
