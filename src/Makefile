@@ -18,6 +18,8 @@ CFLAGS := $(CFLAGS) -g
 smeb: LDLIBS = -pthread -lm -lz
 smeb: client.o ebml_writer.o ebml_reader.o array.o hash.o list.o base64.o
 
+client.o: common.h
+
 
 #
 # Tests

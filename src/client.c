@@ -33,7 +33,7 @@ static void* http_request_dispatch       (client_p client, server_p server,
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream);
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size);
 
 
 int client_handlers_init() {
@@ -300,10 +300,12 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		ssize_t cluster_size;
 		while ( (cluster_size = streamer_try_to_extract_mkv_cluster(client->buffer.ptr, client->buffer.filled)) != -1 ) {
 			
-			/*bool found_keyframe = */streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream);
+			char*  patched_buffer_ptr = NULL;
+			size_t patched_buffer_size = 0;
+			/*bool found_keyframe = */streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size);
 			
 			// Calculate size for HTTP chunked encoding encapsulation
-			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(cluster_size);
+			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(patched_buffer_size);
 			
 			// Create a new stream buffer for the cluster
 			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
@@ -312,13 +314,16 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			// Fill the buffer with the cluster and add HTTP chunked encapsulation around it
 			stream_buffer->ptr = malloc(http_encapsulated_size);
 			stream_buffer->size = http_encapsulated_size;
-			int enc_bytes = snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", cluster_size);
+			int enc_bytes = snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", patched_buffer_size);
 			printf("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
-				enc_bytes, cluster_size, http_encapsulated_size, http_encapsulated_size - cluster_size);
-			//memset(stream_buffer->ptr + enc_bytes, 0, cluster_size);
-			memcpy(stream_buffer->ptr + enc_bytes, client->buffer.ptr, cluster_size);
-			stream_buffer->ptr[enc_bytes + cluster_size + 0] = '\r';
-			stream_buffer->ptr[enc_bytes + cluster_size + 1] = '\n';
+				enc_bytes, patched_buffer_size, http_encapsulated_size, http_encapsulated_size - patched_buffer_size);
+			//memset(stream_buffer->ptr + enc_bytes, 0, patched_buffer_size);
+			memcpy(stream_buffer->ptr + enc_bytes, patched_buffer_ptr, patched_buffer_size);
+			stream_buffer->ptr[enc_bytes + patched_buffer_size + 0] = '\r';
+			stream_buffer->ptr[enc_bytes + patched_buffer_size + 1] = '\n';
+			
+			// Free the patched buffer
+			free(patched_buffer_ptr);
 			
 			// Remove the cluster from the client buffer
 			memmove(client->buffer.ptr, client->buffer.ptr + cluster_size, client->buffer.filled - cluster_size);
@@ -353,6 +358,13 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	
 	
 	leave_receive_stream:
+		if (flags & CLIENT_CON_CLEANUP) {
+			// Update the prev source offset so we properly patch the cluster timecodes
+			// as soon as the source reconnects and sends us new clusters.
+			printf("prev_sources_offset: %lu\n", client->stream->prev_sources_offset);
+			client->stream->prev_sources_offset += client->stream->last_observed_timecode;
+			printf("prev_sources_offset: %lu, lotc: %lu\n", client->stream->prev_sources_offset, client->stream->last_observed_timecode);
+		}
 		goto disconnect;
 	
 	
@@ -736,26 +748,41 @@ static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
 	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
 
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream) {
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size) {
 	bool keyframe_found = false;
 	size_t pos = 0;
-	uint64_t cluster_timecode;
+	uint64_t cluster_timecode = 0;
 	bool show_verbose = false;
+	
+	FILE* pb = open_memstream(patched_buffer_ptr, patched_buffer_size);
 	
 	// Read the cluster element header
 	ebml_read_element_header(buffer_ptr, buffer_size, &pos);
 	// Write a matching cluster element header into the intro stream
 	off_t o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
+	// Write cluster element header into the patched buffer stream
+	off_t pbo1 = ebml_element_start(pb, MKV_Cluster);
 	
 	while (pos < buffer_size) {
 		ebml_elem_t e = ebml_read_element_header(buffer_ptr, buffer_size, &pos);
+		
+		// Write the elements into the patched buffer
+		if (e.id == MKV_Timecode) {
+			// Write patched timecode to the patched buffer. This is the entire point of the
+			// patched buffer: patching the timecodes of the whole thing.
+			uint64_t timecode = ebml_read_uint(e.data_ptr, e.data_size);
+			ebml_element_uint(pb, MKV_Timecode, stream->prev_sources_offset + timecode);
+		} else {
+			// Copy all other elements as they are
+			fwrite(e.data_ptr - e.header_size, e.header_size + e.data_size, 1, pb);
+		}
 		
 		if (e.id == MKV_Timecode) {
 			cluster_timecode = ebml_read_uint(e.data_ptr, e.data_size);
 			if (show_verbose) printf("cluster: <Timecode %zu bytes: %lu>\n", e.data_size, cluster_timecode);
 			
 			// Copy the timecode into the current intro cluster
-			ebml_element_uint(stream->intro_stream, MKV_Timecode, cluster_timecode);
+			ebml_element_uint(stream->intro_stream, MKV_Timecode, stream->prev_sources_offset + cluster_timecode);
 		} else if (e.id == MKV_SimpleBlock) {
 			size_t block_pos = pos;
 			uint64_t track_number = ebml_read_data_size(buffer_ptr + block_pos, buffer_size - block_pos, &block_pos);
@@ -764,6 +791,8 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, strea
 			block_pos += 2;
 			uint8_t flags = ebml_read_uint(buffer_ptr + block_pos, 1);
 			block_pos += 1;
+			
+			stream->last_observed_timecode = cluster_timecode + timecode;
 			
 #			define MKV_FLAG_KEYFRAME    (0b10000000)
 #			define MKV_FLAG_INVISIBLE   (0b00001000)
@@ -789,7 +818,7 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, strea
 						
 						// Write cluster element header and the timecode element
 						o1 = ebml_element_start(stream->intro_stream, MKV_Cluster);
-						ebml_element_uint(stream->intro_stream, MKV_Timecode, cluster_timecode);
+						ebml_element_uint(stream->intro_stream, MKV_Timecode, stream->prev_sources_offset + cluster_timecode);
 						
 						// Now continue to write all simple block elements that follow it to the intro stream
 					}
@@ -822,6 +851,9 @@ static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, strea
 	ebml_element_end(stream->intro_stream, o1);
 	fflush(stream->intro_stream);
 	if (show_verbose) printf("intro buffer size: %zu\n", stream->intro_buffer.size);
+	
+	ebml_element_end(pb, pbo1);
+	fclose(pb);
 	
 	return keyframe_found;
 }

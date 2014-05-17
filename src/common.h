@@ -33,6 +33,9 @@ typedef struct {
 	FILE* intro_stream;
 	buffer_t intro_buffer;
 	
+	uint64_t prev_sources_offset;
+	uint64_t last_observed_timecode;
+	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;
 	//char* snapshot_mime_type;
