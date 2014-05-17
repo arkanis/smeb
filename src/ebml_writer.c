@@ -207,7 +207,9 @@ size_t ebml_encoded_uint_required_bytes(uint64_t value) {
  * numbers into account by counting the leading sign bits instead of zeros.
  */
 size_t ebml_encoded_int_required_bytes(int64_t value) {
-	int leading_sign_bits = __builtin_clrsbll(value);
+	//int leading_sign_bits = __builtin_clrsbll(value);
+	int leading_sign_bits = __builtin_clzll( (value >= 0) ? value : ~value ) - 1;
+	
 	if (leading_sign_bits < 8) {
 		fprintf(stderr, "EBML: Value %ld out of encodable int range!\n", value);
 		return 0;
@@ -224,7 +226,8 @@ size_t ebml_unencoded_uint_required_bytes(uint64_t value) {
 }
 
 size_t ebml_unencoded_int_required_bytes(int64_t value) {
-	int leading_sign_bits = __builtin_clrsbll(value);
+	//int leading_sign_bits = __builtin_clrsbll(value);
+	int leading_sign_bits = __builtin_clzll( (value >= 0) ? value : ~value ) - 1;
 	int value_bits = 64 - leading_sign_bits;
 	int value_bytes = (value_bits - 1) / 8 + 1;
 	return value_bytes;
