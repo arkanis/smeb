@@ -10,6 +10,7 @@
 		a { color: inherit; }
 		
 		html, body { margin: 0; padding: 0; }
+		body { overflow-x: hidden; }
 	</style>
 	<script src="jquery-2.1.1.js"></script>
 	<script>
@@ -17,6 +18,16 @@
 			$('ul > li > a').click(function(){
 				$('video').attr('src', $(this).attr('href'));
 				return false;
+			});
+			$('video').bind('playing', function(){
+				var video = $('video').get(0);
+				var vw = video.videoWidth, vh = video.videoHeight;
+				//console.log("width:", vw, "height:", vh, "body width:", $('body').innerWidth());
+				
+				$('video').css({
+					'transform': 'scale(' + ($('body').innerWidth() / vw) + ')',
+					'transform-origin': 'left top'
+				});
 			});
 		});
 	</script>
@@ -31,7 +42,7 @@
 	<li><a href="http://localhost:1234/1080p.webm">1080p</a></li>
 </ul>
 
-<video src="http://localhost:1234/test.webm" autoplay preload="none"></video>
+<video src="http://localhost:1234/test.webm" autoplay preload="none" controls></video>
 
 </body>
 </html>
