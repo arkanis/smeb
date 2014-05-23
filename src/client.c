@@ -31,7 +31,8 @@ static void  http_request_handle_header  (client_p client, char* name, char* val
 static void* http_request_dispatch       (client_p client, server_p server,
 	void* enter_send_buffer_and_disconnect,
 	void* enter_receive_stream,
-	void* enter_send_stream
+	void* enter_send_stream,
+	void* enter_status_info
 );
 
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
@@ -153,9 +154,45 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		goto *http_request_dispatch(client, server,
 			&&enter_send_buffer_and_disconnect,
 			&&enter_receive_stream,
-			&&enter_send_stream
+			&&enter_send_stream,
+			&&enter_status_info
 		);
 	
+	
+	// State to generate status information as JSON
+	// Client state used:
+	//   client->buffer (JSON data to send to the client), client->buffer_to_free (free the JSON buffer when sent)
+	enter_status_info: {
+		printf("enter_status_info");
+		FILE* json = open_memstream(&client->buffer.ptr, &client->buffer.size);
+			void add(char* text) { fwrite(text, strlen(text), 1, json); }
+			
+			add("HTTP/1.0 200 OK\r\n"
+				"Server: smeb v1.0.0\r\n"
+				"Content-Type: application/json\r\n"
+				"\r\n");
+			add("{\n");
+			
+			bool first = true;
+			for(dict_elem_t e = dict_start(server->streams); e != NULL; e = dict_next(server->streams, e)) {
+				if (first) {
+					first = false;
+				} else {
+					add(",\n");
+				}
+				
+				const char* resource = dict_key(e);
+				char buffer[512];
+				snprintf(buffer, sizeof(buffer), "\"%s\": null", resource);
+				add(buffer);
+			}
+			
+			add("\n}");
+		fclose(json);
+		
+		client->buffer_to_free = client->buffer.ptr;
+		goto enter_send_buffer_and_disconnect;
+	}
 	
 	
 	// State to receive a video stream and store it in new stream buffers.
@@ -581,9 +618,14 @@ static void http_request_handle_header(client_p client, char* name, char* value)
 static void* http_request_dispatch(client_p client, server_p server,
 		void* enter_send_buffer_and_disconnect,
 		void* enter_receive_stream,
-		void* enter_send_stream
+		void* enter_send_stream,
+		void* enter_status_info
 ) {
 	printf("dispatching %s...\n", client->resource);
+	if ( strcmp(client->resource, "/") == 0 || strcmp(client->resource, "/index.json") == 0 ) {
+		return enter_status_info;
+	}
+	
 	client->stream = dict_get_ptr(server->streams, client->resource);
 	
 	if (client->flags & CLIENT_IS_POST_REQUEST) {
