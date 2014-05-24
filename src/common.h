@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "timer.h"
 #include "hash.h"
 #include "list.h"
 
@@ -35,6 +36,8 @@ typedef struct {
 	
 	uint64_t prev_sources_offset;
 	uint64_t last_observed_timecode;
+	
+	usec_t last_disconnect_at;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;

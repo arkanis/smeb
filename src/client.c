@@ -183,7 +183,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				
 				const char* resource = dict_key(e);
 				char buffer[512];
-				snprintf(buffer, sizeof(buffer), "\"%s\": null", resource);
+				snprintf(buffer, sizeof(buffer), "\t\"%s\": null", resource);
 				add(buffer);
 			}
 			
@@ -213,6 +213,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			printf("new stream at %s\n", client->resource);
 		} else {
 			printf("continuing on stream %s\n", client->resource);
+			
+			client->stream->last_disconnect_at = 0;
 		}
 		
 		client->state = &&receive_stream_header;
@@ -405,6 +407,9 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			printf("prev_sources_offset: %lu\n", client->stream->prev_sources_offset);
 			client->stream->prev_sources_offset += client->stream->last_observed_timecode;
 			printf("prev_sources_offset: %lu, lotc: %lu\n", client->stream->prev_sources_offset, client->stream->last_observed_timecode);
+			
+			// Remember when the last data arrived so we know how old the stream is
+			client->stream->last_disconnect_at = time_now();
 		}
 		goto disconnect;
 	

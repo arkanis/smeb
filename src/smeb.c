@@ -28,9 +28,12 @@ ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -th
 
 #include <signal.h>
 #include <sys/signalfd.h>
+#include <sys/timerfd.h>
 
 #include "common.h"
 #include "client.h"
+
+static void stream_destroy(stream_p stream);
 
 
 int main(int argc, char** argv) {
@@ -55,6 +58,18 @@ int main(int argc, char** argv) {
 	
 	
 	client_handlers_init();
+	
+	
+	// Create a timer that wakes us every minute
+	int timer = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK);
+	if (timer == -1)
+		perror("timerfd_create"), exit(1);
+	
+	struct itimerspec timer_setup = (struct itimerspec){
+		.it_value    = { 10, 0 },
+		.it_interval = { 10, 0 }
+	};
+	timerfd_settime(timer, 0, &timer_setup, NULL);
 	
 	
 	// Setup HTTP server socket.
@@ -93,12 +108,14 @@ int main(int argc, char** argv) {
 	// Do the poll loop
 	printf("server: willing and able\n");
 	while (true) {
-		size_t pollfds_length = 2 + server.clients->length;
+		size_t non_client_fds = 3;
+		size_t pollfds_length = non_client_fds + server.clients->length;
 		struct pollfd pollfds[pollfds_length];
 		pollfds[0] = (struct pollfd){ signals, POLLIN, 0 };
 		pollfds[1] = (struct pollfd){ http_server_fd,  POLLIN, 0 };
+		pollfds[2] = (struct pollfd){ timer,  POLLIN, 0 };
 		
-		size_t i = 2;
+		size_t i = non_client_fds;
 		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e), i++) {
 			int client_fd = hash_key(e);
 			client_p client = hash_value_ptr(e);
@@ -126,10 +143,25 @@ int main(int argc, char** argv) {
 			break;
 		}
 		
+		if (pollfds[2].revents & POLLIN) {
+			uint64_t expirations;
+			read(timer, &expirations, sizeof(expirations));
+			
+			// Delete expired streams
+			for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
+				stream_p stream = dict_value_ptr(e);
+				if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + 10 * 1000000LL < time_now()) {
+					printf("deleting stream %s\n", dict_key(e));
+					stream_destroy(stream);
+					dict_remove_elem(server.streams, e);
+				}
+			}
+		}
+		
 		// Check for incomming data from clients. For this to work the clients hash must not
 		// be changed between the poll() call and here. Because of this we handle new connections
 		// at the end.
-		i = 2;
+		i = non_client_fds;
 		for(hash_elem_t e = hash_start(server.clients); e != NULL; e = hash_next(server.clients, e), i++) {
 			int client_fd = pollfds[i].fd;
 			client_p client = hash_value_ptr(e);
@@ -184,9 +216,23 @@ int main(int argc, char** argv) {
 	// Clean up time
 	printf("server: cleaning up\n");
 	close(http_server_fd);
+	close(timer);
 	close(signals);
 	if ( sigprocmask(SIG_UNBLOCK, &signal_mask, NULL) == -1 )
 		perror("sigprocmask"), exit(1);
 	
 	return 0;
+}
+
+static void stream_destroy(stream_p stream) {
+	// TODO: disconnect and cleanup all clients of this stream
+	
+	for(list_node_p n = stream->stream_buffers->first; n != NULL; n = n->next) {
+		buffer_p buffer = list_value_ptr(n);
+		free(buffer->ptr);
+	}
+	list_destroy(stream->stream_buffers);
+	free(stream->header.ptr);
+	fclose(stream->intro_stream);
+	free(stream->intro_buffer.ptr);
 }
