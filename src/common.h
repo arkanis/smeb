@@ -38,6 +38,7 @@ typedef struct {
 	uint64_t last_observed_timecode;
 	
 	usec_t last_disconnect_at;
+	dict_p params;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -39,6 +40,9 @@ static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffe
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
 static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size);
+
+static void urldecode(const char *src, char *dst);
+static void json_escape(const char *src, char* dest, size_t dest_size);
 
 
 int client_handlers_init() {
@@ -163,7 +167,6 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	// Client state used:
 	//   client->buffer (JSON data to send to the client), client->buffer_to_free (free the JSON buffer when sent)
 	enter_status_info: {
-		printf("enter_status_info");
 		FILE* json = open_memstream(&client->buffer.ptr, &client->buffer.size);
 			void add(char* text) { fwrite(text, strlen(text), 1, json); }
 			
@@ -173,18 +176,36 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				"\r\n");
 			add("{\n");
 			
-			bool first = true;
+			bool first1 = true;
 			for(dict_elem_t e = dict_start(server->streams); e != NULL; e = dict_next(server->streams, e)) {
-				if (first) {
-					first = false;
+				if (first1) {
+					first1 = false;
 				} else {
 					add(",\n");
 				}
 				
-				const char* resource = dict_key(e);
-				char buffer[512];
-				snprintf(buffer, sizeof(buffer), "\t\"%s\": null", resource);
+				const char* path = dict_key(e);
+				stream_p stream = dict_value_ptr(e);
+				
+				char buffer[512], buffer_key[512], buffer_value[512];
+				json_escape(path, buffer_key, sizeof(buffer_key));
+				snprintf(buffer, sizeof(buffer), "\t\"%s\": {\n", buffer_key);
 				add(buffer);
+				
+				bool first2 = true;
+				for(dict_elem_t e = dict_start(stream->params); e != NULL; e = dict_next(stream->params, e)) {
+					if (first2)
+						first2 = false;
+					else
+						add(",\n");
+					
+					json_escape(dict_key(e), buffer_key, sizeof(buffer_key));
+					json_escape(dict_value(e, char*), buffer_value, sizeof(buffer_value));
+					snprintf(buffer, sizeof(buffer), "\t\t\"%s\": \"%s\"", buffer_key, buffer_value);
+					add(buffer);
+				}
+				
+				add("\n\t}");
 			}
 			
 			add("\n}");
@@ -199,22 +220,59 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	// Client state used:
 	//   client->stream (not freed by the client, contains the stream this client transmits to)
 	
-	enter_receive_stream:
+	enter_receive_stream: {
+		size_t path_len = strcspn(client->resource, "?");
+		char* path = strndup(client->resource, path_len);
+		char* params = client->resource + path_len;
+		
 		if (!client->stream) {
-			client->stream = dict_put_ptr(server->streams, client->resource);
+			client->stream = dict_put_ptr(server->streams, path);
 			memset(client->stream, 0, sizeof(stream_t));
 			
 			client->stream->stream_buffers = list_of(stream_buffer_t);
 			client->stream->intro_stream = open_memstream(&client->stream->intro_buffer.ptr, &client->stream->intro_buffer.size);
+			client->stream->params = dict_of(char*);
 			
 			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
 				perror("fcntl"), exit(1);
 			
-			printf("new stream at %s\n", client->resource);
+			printf("new stream at %s\n", path);
 		} else {
-			printf("continuing on stream %s\n", client->resource);
+			printf("continuing on stream %s\n", path);
 			
 			client->stream->last_disconnect_at = 0;
+			// TODO: deep clean old params dict
+		}
+		
+		// First extract any URL parameters
+		{
+			
+			char* p = params;
+			while (*p != '\0') {
+				char* name = p + 1;  // jump over ? or &
+				size_t name_len = strcspn(name, "=&");
+				p = name + name_len;
+				
+				if (*p == '=') {
+					// Value follows
+					char* value = p + 1;
+					size_t value_len = strcspn(value, "&");
+					p = value + value_len;
+					
+					char* decoded_name = strndup(name, name_len);
+					urldecode(decoded_name, decoded_name);
+					char* decoded_value = strndup(value, value_len);
+					urldecode(decoded_value, decoded_value);
+					
+					dict_put(client->stream->params, decoded_name, char*, decoded_value);
+				} else {
+					// Only name, no value
+					char* decoded_name = strndup(name, name_len);
+					urldecode(decoded_name, decoded_name);
+					
+					dict_put(client->stream->params, decoded_name, char*, NULL);
+				}
+			}
 		}
 		
 		client->state = &&receive_stream_header;
@@ -234,6 +292,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		} else {
 			goto return_to_server_to_poll_for_io;
 		}
+	}
 		
 	receive_stream_header:
 		if (flags & CLIENT_CON_CLEANUP)
@@ -954,4 +1013,44 @@ static ssize_t first_line_length(buffer_p buffer) {
 		return -1;
 	// Regard the \n as part of the line (thats the `+ 1`). Makes things easier down the road.
 	return (line_end - (void*)buffer->ptr) + 1;
+}
+
+
+/**
+ * Code by ThomasH, taken from http://stackoverflow.com/a/14530993
+ */
+static void urldecode(const char *src, char *dst) {
+	char a, b;
+	while (*src) {
+		if ( (*src == '%') && ((a = src[1]) && (b = src[2])) && (isxdigit(a) && isxdigit(b)) ) {
+			if (a >= 'a')
+					a -= 'a'-'A';
+			if (a >= 'A')
+					a -= ('A' - 10);
+			else
+					a -= '0';
+			if (b >= 'a')
+					b -= 'a'-'A';
+			if (b >= 'A')
+					b -= ('A' - 10);
+			else
+					b -= '0';
+			*dst++ = 16*a+b;
+			src+=3;
+		} else {
+			*dst++ = *src++;
+		}
+	}
+	*dst++ = '\0';
+}
+
+static void json_escape(const char *src, char* dest, size_t dest_size) {
+	char* p = dest;
+	while(*src != '\0' && (dest_size - (p - dest)) > 1) {
+		if (*src == '"' || *src == '\\')
+			*p++ = '\\';
+		*p++ = *src++;
+	}
+	
+	*p = '\0';
 }
