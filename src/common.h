@@ -19,7 +19,7 @@ typedef struct {
 	size_t   size;
 	size_t   refcount;
 	uint32_t flags;
-	uint64_t timecode;
+	usec_t   timecode;
 } stream_buffer_t, *stream_buffer_p;
 
 // Don't free the stream buffers ptr when the refcount reaches 0. Used for
@@ -45,6 +45,8 @@ typedef struct {
 	
 	usec_t last_disconnect_at;
 	dict_p params;
+	
+	usec_t latest_cluster_received_at;
 	
 	// For later
 	//buffer_t snapshot_image, stalled_frame;

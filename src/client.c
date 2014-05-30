@@ -413,7 +413,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
 			stream_buffer_new_http_encapsulated(stream_buffer, patched_buffer_ptr, patched_buffer_size, 0);
-			stream_buffer->timecode = client->stream->last_observed_timecode;
+			
+			client->stream->latest_cluster_received_at = time_now();
 			
 			// Free the patched buffer
 			free(patched_buffer_ptr);
@@ -542,7 +543,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			// We finished writing this buffer (otherwise we would've returned on an EAGAIN).
 			// Unref the finished buffer and free the list node of it when the unref freed the buffer.
-			list_node_p next_stream_buffer = client->current_stream_buffer->next;
+			list_node_p next_stream_buffer_node = client->current_stream_buffer->next;
+			
 			stream_buffer_p finished_stream_buffer = list_value_ptr(client->current_stream_buffer);
 			if ( stream_buffer_unref(finished_stream_buffer) == true ) {
 				if (finished_stream_buffer->flags & STREAM_BUFFER_CLIENT_PRIVATE)
@@ -551,8 +553,39 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 					list_remove(client->stream->stream_buffers, client->current_stream_buffer);
 			}
 			
+			if (next_stream_buffer_node) {
+				stream_buffer_p next_stream_buffer = list_value_ptr(next_stream_buffer_node);
+				printf("btc: %ld, lctc: %ld\n", next_stream_buffer->timecode, client->stream->latest_cluster_received_at);
+				
+				if (next_stream_buffer->timecode + 30 * 1000000LL < client->stream->latest_cluster_received_at) {
+					// Client is to far behind, try to bring him up to date again by throwing all
+					// the buffers away and continuing with a new intro cluster.
+					printf("[client %d] client to far behind, disconnecting\n", client_fd);
+					client->current_stream_buffer = next_stream_buffer_node;
+					goto disconnect;
+					/*
+					for(list_node_p n = next_stream_buffer_node; n != NULL; n = n->next) {
+						stream_buffer_p stream_buffer = list_value_ptr(n);
+						if ( stream_buffer_unref(stream_buffer) == true ) {
+							if (stream_buffer->flags & STREAM_BUFFER_CLIENT_PRIVATE)
+								free(n);
+							else
+								list_remove(client->stream->stream_buffers, n);
+						}
+					}
+					
+					list_node_p intro_cluster_node = list_new_node(client->stream->stream_buffers);
+					stream_buffer_p intro_cluster_buffer = list_value_ptr(intro_cluster_node);
+					stream_buffer_new_http_encapsulated(intro_cluster_buffer, client->stream->intro_buffer.ptr, client->stream->intro_buffer.size, STREAM_BUFFER_CLIENT_PRIVATE);
+					
+					next_stream_buffer_node = intro_cluster_node;
+					*/
+				}
+				
+			}
+			
 			// Wire up the next buffer or stall
-			client->current_stream_buffer = next_stream_buffer;
+			client->current_stream_buffer = next_stream_buffer_node;
 			if (client->current_stream_buffer) {
 				stream_buffer_p stream_buffer = list_value_ptr(client->current_stream_buffer);
 				client->buffer.ptr  = stream_buffer->ptr;
@@ -577,6 +610,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 					list_remove(client->stream->stream_buffers, n);
 			}
 		}
+		
+		goto disconnect;
 	
 	
 	
@@ -1027,6 +1062,7 @@ static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, 
 	memset(stream_buffer, 0, sizeof(stream_buffer_t));
 	stream_buffer->refcount = 1;
 	stream_buffer->flags = flags;
+	stream_buffer->timecode = time_now();
 	stream_buffer->ptr = content_ptr;
 	stream_buffer->size = content_size;
 	
@@ -1039,6 +1075,7 @@ static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, c
 	memset(stream_buffer, 0, sizeof(stream_buffer_t));
 	stream_buffer->refcount = 1;
 	stream_buffer->flags = flags;
+	stream_buffer->timecode = time_now();
 	
 	// Calculate size for HTTP chunked encoding encapsulation
 	size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(content_size);
@@ -1072,6 +1109,7 @@ static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
 	if (stream_buffer->refcount == 0) {
 		if ( !(stream_buffer->flags & STREAM_BUFFER_DONT_FREE_CONTENT) )
 			free(stream_buffer->ptr);
+		stream_buffer->ptr = NULL;
 		
 		stream_buffers_allocated--;
 		stream_bytes_allocated -= stream_buffer->size;
