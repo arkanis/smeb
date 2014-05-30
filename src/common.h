@@ -19,10 +19,16 @@ typedef struct {
 	size_t   size;
 	size_t   refcount;
 	uint32_t flags;
+	uint64_t timecode;
 } stream_buffer_t, *stream_buffer_p;
 
-#define STREAM_BUFFER_STATIC    (1 << 0)
-#define STREAM_BUFFER_KEYFRAME  (1 << 1)
+// Don't free the stream buffers ptr when the refcount reaches 0. Used for
+// static string data and data that belongs to the stream (e.g. the video
+// header).
+#define STREAM_BUFFER_DONT_FREE_CONTENT   (1 << 0)
+// The stream buffers list node was created by the client itself and doesn't
+// belong to the streams buffer list. So they must not be removed from that list.
+#define STREAM_BUFFER_CLIENT_PRIVATE      (1 << 1)
 
 
 // A video stream, one client sends the video, many others receive it
@@ -78,7 +84,6 @@ typedef struct {
 #define CLIENT_IS_AUTHORIZED       (1 << 3)
 
 #define CLIENT_STALLED             (1 << 4)
-#define CLIENT_NO_KEYFRAME_YET     (1 << 5)
 
 
 // Server stuff that others need to interact with

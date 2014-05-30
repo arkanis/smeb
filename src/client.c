@@ -41,6 +41,11 @@ static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buff
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
 static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size);
 
+static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags);
+static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags);
+static void stream_buffer_ref(stream_buffer_p stream_buffer);
+static bool stream_buffer_unref(stream_buffer_p stream_buffer);
+
 static void urldecode(const char *src, char *dst);
 static void json_escape(const char *src, char* dest, size_t dest_size);
 
@@ -404,25 +409,11 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			char*  patched_buffer_ptr = NULL;
 			size_t patched_buffer_size = 0;
-			/*bool found_keyframe = */streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size);
+			streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size);
 			
-			// Calculate size for HTTP chunked encoding encapsulation
-			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(patched_buffer_size);
-			
-			// Create a new stream buffer for the cluster
 			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
-			memset(stream_buffer, 0, sizeof(stream_buffer_t));
-			
-			// Fill the buffer with the cluster and add HTTP chunked encapsulation around it
-			stream_buffer->ptr = malloc(http_encapsulated_size);
-			stream_buffer->size = http_encapsulated_size;
-			int enc_bytes = snprintf(stream_buffer->ptr, http_encapsulated_size, "%zx\r\n", patched_buffer_size);
-			printf("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
-				enc_bytes, patched_buffer_size, http_encapsulated_size, http_encapsulated_size - patched_buffer_size);
-			//memset(stream_buffer->ptr + enc_bytes, 0, patched_buffer_size);
-			memcpy(stream_buffer->ptr + enc_bytes, patched_buffer_ptr, patched_buffer_size);
-			stream_buffer->ptr[enc_bytes + patched_buffer_size + 0] = '\r';
-			stream_buffer->ptr[enc_bytes + patched_buffer_size + 1] = '\n';
+			stream_buffer_new_http_encapsulated(stream_buffer, patched_buffer_ptr, patched_buffer_size, 0);
+			stream_buffer->timecode = client->stream->last_observed_timecode;
 			
 			// Free the patched buffer
 			free(patched_buffer_ptr);
@@ -431,27 +422,29 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			memmove(client->buffer.ptr, client->buffer.ptr + cluster_size, client->buffer.filled - cluster_size);
 			client->buffer.filled -= cluster_size;
 			
-			fprintf(stderr, "[client %d]: received %zd stream bytes (%zu bytes encapsulated)\n", client_fd, cluster_size, http_encapsulated_size);
+			fprintf(stderr, "[client %d]: received new cluster (%zd bytes)\n", client_fd, cluster_size);
 			
 			// Update all clients of this stream that already ran out of data
 			for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
 				client_p iteration_client = hash_value_ptr(e);
-				if (iteration_client->stream == client->stream && iteration_client->flags & CLIENT_STALLED) {
-					//if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET && !found_keyframe) {
-					//	fprintf(stderr, "[client %d]: would unstall client %d but no keyframe\n", client_fd, (int)hash_key(e));
-					//} else {
+				if (iteration_client->stream == client->stream && iteration_client != client) {
+					// Make sure the buffer is referenced by all clients watching this stream (and not by our self again)
+					stream_buffer_ref(stream_buffer);
+					
+					if (iteration_client->flags & CLIENT_STALLED) {
 						iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
 						iteration_client->buffer.ptr = stream_buffer->ptr;
 						iteration_client->buffer.size = stream_buffer->size;
 						iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
-						iteration_client->flags &= ~(CLIENT_STALLED | CLIENT_NO_KEYFRAME_YET);
+						iteration_client->flags &= ~CLIENT_STALLED;
 						fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
-					//}
-				//	if (iteration_client->flags & CLIENT_NO_KEYFRAME_YET || found_keyframe)
-				//}
-				//if ( iteration_client->stream == client->stream && (iteration_client->flags & CLIENT_STALLED) && (!(iteration_client->flags & CLIENT_NO_KEYFRAME_YET) || found_keyframe) ) {
+					}
 				}
 			}
+			
+			// We're no longer interested in the buffer, only the clients need it now, so unref it
+			if ( stream_buffer_unref(stream_buffer) == true )
+				list_remove_last(client->stream->stream_buffers);
 		}
 		
 		// No more complete cluster elments, wait for more data
@@ -480,23 +473,32 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	
 	enter_send_stream: {
 		client->state = &&send_stream;
-		client->flags |= CLIENT_POLL_FOR_WRITE | CLIENT_NO_KEYFRAME_YET;
+		client->flags |= CLIENT_POLL_FOR_WRITE;
 		client->flags &= ~CLIENT_POLL_FOR_READ;
 		
 		
-		// Create a new stream buffer node for the initial HTTP response and
-		// video header and wire them up as the first buffers the client sends,
-		// followed by the latest buffer of the stream.
+		// Create new stream buffer nodes for the initial stuff the clients needs
+		// to receive. This is:
+		// - The HTTP response header
+		// - The WebM video header
+		// - The "intro" cluster with blocks from all tracks, starting with the
+		//   last known keyframe
+		// After the client has received these stream buffers we let him stall
+		// (next == NULL) so he picks up the next incomming stream buffer.
 		list_node_p http_header_node = list_new_node(client->stream->stream_buffers);
 		list_node_p video_header_node = list_new_node(client->stream->stream_buffers);
 		list_node_p intro_cluster_node = list_new_node(client->stream->stream_buffers);
 		
-		
-		http_header_node->prev = NULL;
-		http_header_node->next = video_header_node;
+		// Wire the stream buffers up into a neat list
+		http_header_node->prev   = NULL;
+		http_header_node->next   = video_header_node;
+		video_header_node->prev  = http_header_node;
+		video_header_node->next  = intro_cluster_node;
+		intro_cluster_node->prev = video_header_node;
+		intro_cluster_node->next = NULL;
 		
 		stream_buffer_p http_header_buffer = list_value_ptr(http_header_node);
-		http_header_buffer->ptr = ""
+		char* http_response_header_text = ""
 			"HTTP/1.1 200 OK\r\n"
 			"Server: smeb v1.0.0\r\n"
 			"Transfer-Encoding: chunked\r\n"
@@ -504,33 +506,13 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			"Cache-Control: no-cache\r\n"
 			"Content-Type: video/webm\r\n"
 			"\r\n";
-		http_header_buffer->size = strlen(http_header_buffer->ptr);
-		http_header_buffer->refcount = 0;
-		http_header_buffer->flags = STREAM_BUFFER_STATIC;
-		
-		
-		video_header_node->prev = NULL;
-		video_header_node->next = intro_cluster_node;
+		stream_buffer_new(http_header_buffer, http_response_header_text, strlen(http_response_header_text), STREAM_BUFFER_DONT_FREE_CONTENT | STREAM_BUFFER_CLIENT_PRIVATE);
 		
 		stream_buffer_p video_header_buffer = list_value_ptr(video_header_node);
-		video_header_buffer->ptr = client->stream->header.ptr;
-		video_header_buffer->size = client->stream->header.size;
-		video_header_buffer->refcount = 0;
-		video_header_buffer->flags = STREAM_BUFFER_STATIC;
-		
-		
-		intro_cluster_node->prev = NULL;
-		// Let the client stall after the intro node. This way it should pick up the next incomming buffer.
-		intro_cluster_node->next = NULL;
+		stream_buffer_new(video_header_buffer, client->stream->header.ptr, client->stream->header.size, STREAM_BUFFER_DONT_FREE_CONTENT | STREAM_BUFFER_CLIENT_PRIVATE);		
 		
 		stream_buffer_p intro_cluster_buffer = list_value_ptr(intro_cluster_node);
-		intro_cluster_buffer->size = streamer_calculate_http_encapsulated_size(client->stream->intro_buffer.size);
-		intro_cluster_buffer->ptr = malloc(intro_cluster_buffer->size);
-			int enc_bytes = snprintf(intro_cluster_buffer->ptr, intro_cluster_buffer->size, "%zx\r\n", client->stream->intro_buffer.size);
-			memcpy(intro_cluster_buffer->ptr + enc_bytes, client->stream->intro_buffer.ptr, client->stream->intro_buffer.size);
-			intro_cluster_buffer->ptr[enc_bytes + client->stream->intro_buffer.size + 0] = '\r';
-			intro_cluster_buffer->ptr[enc_bytes + client->stream->intro_buffer.size + 1] = '\n';
-		intro_cluster_buffer->refcount = 1;
+		stream_buffer_new_http_encapsulated(intro_cluster_buffer, client->stream->intro_buffer.ptr, client->stream->intro_buffer.size, STREAM_BUFFER_CLIENT_PRIVATE);
 		
 		client->current_stream_buffer = http_header_node;
 		client->buffer.ptr  = http_header_buffer->ptr;
@@ -539,7 +521,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		
 	send_stream:
 		if (flags & CLIENT_CON_CLEANUP)
-			goto disconnect;
+			goto leave_send_stream;
 		
 		while(true) {
 			// Write this buffer as far as possible
@@ -550,7 +532,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 						goto return_to_server_to_poll_for_io;
 					} else {
 						perror("write");
-						goto disconnect;
+						goto leave_send_stream;
 					}
 				}
 				
@@ -559,23 +541,42 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			}
 			
 			// We finished writing this buffer (otherwise we would've returned on an EAGAIN).
-			// Wire up the next buffer.
-			client->current_stream_buffer = client->current_stream_buffer->next;
+			// Unref the finished buffer and free the list node of it when the unref freed the buffer.
+			list_node_p next_stream_buffer = client->current_stream_buffer->next;
+			stream_buffer_p finished_stream_buffer = list_value_ptr(client->current_stream_buffer);
+			if ( stream_buffer_unref(finished_stream_buffer) == true ) {
+				if (finished_stream_buffer->flags & STREAM_BUFFER_CLIENT_PRIVATE)
+					free(client->current_stream_buffer);
+				else
+					list_remove(client->stream->stream_buffers, client->current_stream_buffer);
+			}
+			
+			// Wire up the next buffer or stall
+			client->current_stream_buffer = next_stream_buffer;
 			if (client->current_stream_buffer) {
 				stream_buffer_p stream_buffer = list_value_ptr(client->current_stream_buffer);
-				client->buffer.ptr = stream_buffer->ptr;
+				client->buffer.ptr  = stream_buffer->ptr;
 				client->buffer.size = stream_buffer->size;
-				printf("client %d next buffer\n", client_fd);
+				printf("[client %d] next buffer\n", client_fd);
 			} else {
 				client->flags |= CLIENT_STALLED;
 				client->flags &= ~CLIENT_POLL_FOR_WRITE;
-				printf("client %d stalled\n", client_fd);
+				printf("[client %d] stalled\n", client_fd);
 				goto return_to_server_to_poll_for_io;
 			}
 		}
 		
-	//leave_send_stream:
-		// Nothing todo yet, in future: when stream is deleted we have to drop the client connection
+	leave_send_stream:
+		// Unref all buffers that this client would have received
+		for(list_node_p n = client->current_stream_buffer; n != NULL; n = n->next) {
+			stream_buffer_p stream_buffer = list_value_ptr(n);
+			if ( stream_buffer_unref(stream_buffer) == true ) {
+				if (stream_buffer->flags & STREAM_BUFFER_CLIENT_PRIVATE)
+					free(n);
+				else
+					list_remove(client->stream->stream_buffers, n);
+			}
+		}
 	
 	
 	
@@ -1014,6 +1015,74 @@ static ssize_t first_line_length(buffer_p buffer) {
 	// Regard the \n as part of the line (thats the `+ 1`). Makes things easier down the road.
 	return (line_end - (void*)buffer->ptr) + 1;
 }
+
+
+//
+// Stream buffer management
+//
+
+size_t stream_buffers_allocated = 0, stream_bytes_allocated = 0;
+
+static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags) {
+	memset(stream_buffer, 0, sizeof(stream_buffer_t));
+	stream_buffer->refcount = 1;
+	stream_buffer->flags = flags;
+	stream_buffer->ptr = content_ptr;
+	stream_buffer->size = content_size;
+	
+	stream_buffers_allocated++;
+	stream_bytes_allocated += stream_buffer->size;
+	fprintf(stderr, "[stream buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+}
+
+static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags) {
+	memset(stream_buffer, 0, sizeof(stream_buffer_t));
+	stream_buffer->refcount = 1;
+	stream_buffer->flags = flags;
+	
+	// Calculate size for HTTP chunked encoding encapsulation
+	size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(content_size);
+	
+	// Fill the buffer with the cluster and add HTTP chunked encapsulation around it
+	stream_buffer->ptr = malloc(http_encapsulated_size);
+	stream_buffer->size = http_encapsulated_size;
+	int enc_bytes = snprintf(stream_buffer->ptr, stream_buffer->size, "%zx\r\n", content_size);
+	memcpy(stream_buffer->ptr + enc_bytes, content_ptr, content_size);
+	stream_buffer->ptr[enc_bytes + content_size + 0] = '\r';
+	stream_buffer->ptr[enc_bytes + content_size + 1] = '\n';
+	
+	stream_buffers_allocated++;
+	stream_bytes_allocated += stream_buffer->size;
+	fprintf(stderr, "[stream buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+}
+
+static void stream_buffer_ref(stream_buffer_p stream_buffer) {
+	stream_buffer->refcount++;
+}
+
+/**
+ * Decrements the refcount of the stream buffer and returns `true` if the refcount dropped to 0.
+ * The buffer ptr is freed if the refcount reaches 0 unless the STREAM_BUFFER_DONT_FREE_CONTENT
+ * flag is set.
+ */
+static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
+	if (stream_buffer->refcount > 0)
+		stream_buffer->refcount--;
+	
+	if (stream_buffer->refcount == 0) {
+		if ( !(stream_buffer->flags & STREAM_BUFFER_DONT_FREE_CONTENT) )
+			free(stream_buffer->ptr);
+		
+		stream_buffers_allocated--;
+		stream_bytes_allocated -= stream_buffer->size;
+		fprintf(stderr, "[stream buffer %p] buffer freed (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+		return true;
+	}
+	
+	fprintf(stderr, "[stream buffer %p] buffer unrefed\n", stream_buffer);
+	return false;
+}
+
 
 
 /**

@@ -33,8 +33,8 @@ ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -th
 #include "common.h"
 #include "client.h"
 
-static void stream_destroy(stream_p stream);
 
+usec_t stream_delete_timeout_sec = 10;
 
 int main(int argc, char** argv) {
 	if (argc != 3) {
@@ -143,21 +143,6 @@ int main(int argc, char** argv) {
 			break;
 		}
 		
-		if (pollfds[2].revents & POLLIN) {
-			uint64_t expirations;
-			read(timer, &expirations, sizeof(expirations));
-			
-			// Delete expired streams
-			for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
-				stream_p stream = dict_value_ptr(e);
-				if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + 10 * 1000000LL < time_now()) {
-					printf("deleting stream %s\n", dict_key(e));
-					stream_destroy(stream);
-					dict_remove_elem(server.streams, e);
-				}
-			}
-		}
-		
 		// Check for incomming data from clients. For this to work the clients hash must not
 		// be changed between the poll() call and here. Because of this we handle new connections
 		// at the end.
@@ -199,6 +184,34 @@ int main(int argc, char** argv) {
 			}
 		}
 		
+		if (pollfds[2].revents & POLLIN) {
+			uint64_t expirations;
+			read(timer, &expirations, sizeof(expirations));
+			
+			// Delete expired streams
+			for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
+				stream_p stream = dict_value_ptr(e);
+				if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + stream_delete_timeout_sec * 1000000LL < time_now()) {
+					printf("deleting stream %s\n", dict_key(e));
+					
+					// First disconnect all clients watching the stream. This also unrefs any remaining stream buffers.
+					for(hash_elem_t ce = hash_start(server.clients); ce != NULL; ce = hash_next(server.clients, ce)) {
+						int client_fd = hash_key(ce);
+						client_p client = hash_value_ptr(ce);
+						disconnect_client(client_fd, client, ce);
+					}
+					
+					// Free stream stuff
+					list_destroy(stream->stream_buffers);
+					free(stream->header.ptr);
+					fclose(stream->intro_stream);
+					free(stream->intro_buffer.ptr);
+					
+					dict_remove_elem(server.streams, e);
+				}
+			}
+		}
+		
 		// Check for new connections
 		if (pollfds[1].revents & POLLIN) {
 			int client_fd = accept4(http_server_fd, NULL, NULL, SOCK_NONBLOCK);
@@ -222,17 +235,4 @@ int main(int argc, char** argv) {
 		perror("sigprocmask"), exit(1);
 	
 	return 0;
-}
-
-static void stream_destroy(stream_p stream) {
-	// TODO: disconnect and cleanup all clients of this stream
-	
-	for(list_node_p n = stream->stream_buffers->first; n != NULL; n = n->next) {
-		buffer_p buffer = list_value_ptr(n);
-		free(buffer->ptr);
-	}
-	list_destroy(stream->stream_buffers);
-	free(stream->header.ptr);
-	fclose(stream->intro_stream);
-	free(stream->intro_buffer.ptr);
 }
