@@ -15,35 +15,51 @@
 	<script src="jquery-2.1.1.js"></script>
 	<script>
 		$(document).ready(function(){
-			$('ul > li > a').click(function(){
+			var server = 'http://localhost:1234';
+			var stream = '/test';
+			
+			jQuery.getJSON(server).done(function(data){
+				jQuery.each(data, function(path, params){
+					if (path.substr(0, stream.length) == stream) {
+						var matches = path.match(/\.([^\.]*)\..*$/);
+						var quality = matches[1];
+						
+						$('ul#qualities').append(
+							$('<li>').append(
+								$('<a>').attr('href', server + path).text(quality)
+							)
+						);
+					}
+				});
+			});
+			
+			$('ul#qualities').on('click', '> li > a', function(){
 				$('video').attr('src', $(this).attr('href'));
 				return false;
 			});
+			
+			/*
 			$('video').bind('playing', function(){
 				var video = $('video').get(0);
 				var vw = video.videoWidth, vh = video.videoHeight;
-				//console.log("width:", vw, "height:", vh, "body width:", $('body').innerWidth());
-				/*
+				console.log("width:", vw, "height:", vh, "body width:", $('body').innerWidth());
+				
 				$('video').css({
 					'transform': 'scale(' + ($('body').innerWidth() / vw) + ')',
 					'transform-origin': 'left top'
 				});
-				*/
 			});
+			*/
 		});
 	</script>
 </head>
 <body>
 
-<ul>
-	<li><a href="http://localhost:1234/test.webm">test</a></li>
+<ul id="qualities">
 	<li><a href="">none</a></li>
-	<li><a href="http://localhost:1234/sd.webm">SD</a></li>
-	<li><a href="http://localhost:1234/720p.webm">720p</a></li>
-	<li><a href="http://localhost:1234/1080p.webm">1080p</a></li>
 </ul>
 
-<video src="http://localhost:1234/test.webm" autoplay preload="none" controls></video>
+<video src="" autoplay preload="none" controls></video>
 
 </body>
 </html>
