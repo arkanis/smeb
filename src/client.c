@@ -178,6 +178,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			add("HTTP/1.0 200 OK\r\n"
 				"Server: smeb v1.0.0\r\n"
 				"Content-Type: application/json\r\n"
+				"Access-Control-Allow-Origin: *\r\n"
 				"\r\n");
 			add("{\n");
 			
@@ -1125,25 +1126,28 @@ static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
 
 /**
  * Code by ThomasH, taken from http://stackoverflow.com/a/14530993
+ * Added: Replaced '+' with ' '.
  */
 static void urldecode(const char *src, char *dst) {
 	char a, b;
 	while (*src) {
 		if ( (*src == '%') && ((a = src[1]) && (b = src[2])) && (isxdigit(a) && isxdigit(b)) ) {
 			if (a >= 'a')
-					a -= 'a'-'A';
+				a -= 'a'-'A';
 			if (a >= 'A')
-					a -= ('A' - 10);
+				a -= ('A' - 10);
 			else
-					a -= '0';
+				a -= '0';
 			if (b >= 'a')
-					b -= 'a'-'A';
+				b -= 'a'-'A';
 			if (b >= 'A')
-					b -= ('A' - 10);
+				b -= ('A' - 10);
 			else
-					b -= '0';
+				b -= '0';
 			*dst++ = 16*a+b;
 			src+=3;
+		} if (*src == '+') {
+			*dst++ = ' ';
 		} else {
 			*dst++ = *src++;
 		}
