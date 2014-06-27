@@ -29,7 +29,7 @@ static ssize_t first_line_length                   (buffer_p local_buffer);
 
 static void  http_request_handle_headline(client_p client, char* verb, char* resource, char* version);
 static void  http_request_handle_header  (client_p client, char* name, char* value);
-static void* http_request_dispatch       (client_p client, server_p server,
+static void* http_request_dispatch       (client_p client, int client_fd, server_p server,
 	void* enter_send_buffer_and_disconnect,
 	void* enter_receive_stream,
 	void* enter_send_stream,
@@ -97,7 +97,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			int matched_items = sscanf(local_buffer.ptr, " %s %s %s", verb, resource, version);
 			if (matched_items != 3) {
 				// error on reading initial HTTP header line, disconnect client for now
-				printf("client %d, http: error parsing HTTP headline: %.*s", client_fd, (int)line_length, local_buffer.ptr);
+				warn("[client %d] error while parsing HTTP headline: %.*s", client_fd, (int)line_length, local_buffer.ptr);
 				goto free_client_buffer_and_disconnect;
 			}
 			
@@ -160,7 +160,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		client->buffer.size = 0;
 		
 		// Decide what to do with the request
-		goto *http_request_dispatch(client, server,
+		goto *http_request_dispatch(client, client_fd, server,
 			&&enter_send_buffer_and_disconnect,
 			&&enter_receive_stream,
 			&&enter_send_stream,
@@ -172,6 +172,12 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	// Client state used:
 	//   client->buffer (JSON data to send to the client), client->buffer_to_free (free the JSON buffer when sent)
 	enter_status_info: {
+		// We don't need those
+		free(client->method);
+		client->method = NULL;
+		free(client->resource);
+		client->resource = NULL;
+		
 		FILE* json = open_memstream(&client->buffer.ptr, &client->buffer.size);
 			void add(char* text) { fwrite(text, strlen(text), 1, json); }
 			
@@ -239,16 +245,21 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			client->stream->intro_stream = open_memstream(&client->stream->intro_buffer.ptr, &client->stream->intro_buffer.size);
 			client->stream->params = dict_of(char*);
 			
-			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 )
-				perror("fcntl"), exit(1);
+			if ( fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, NULL) | O_NONBLOCK) == -1 ) {
+				warn("[client %d] failed to set connection to non-blocking, fcntl: ", client_fd, strerror(errno));
+				// TODO: free all stream state
+				goto disconnect;
+			}
 			
-			printf("new stream at %s\n", path);
+			printf("[stream %s] creating new stream", path);
 		} else {
-			printf("continuing on stream %s\n", path);
+			printf("[stream %s] resuming stream", path);
 			
 			client->stream->last_disconnect_at = 0;
 			// TODO: deep clean old params dict
 		}
+		
+		client->stream->name = path;
 		
 		// First extract any URL parameters
 		{
@@ -306,12 +317,12 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		
 		// Read incomming data into client buffer
 		ssize_t bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
-		fprintf(stderr, "[client %d]: reading %zd header bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
+		debug("[client %d] header: reading %zd bytes, %zu bytes left in buffer", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
 		if (bytes_read < 1) {
 			if (bytes_read == -1)
 				perror("read");
 			else if (bytes_read == 0)
-				fprintf(stderr, "[client %d]: read returned 0, disconnecting\n", client_fd);
+				debug("[client %d] header: read returned 0", client_fd);
 			
 			goto leave_receive_stream;
 		}
@@ -322,7 +333,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 	receive_stream_header_buffer_filled: {
 		ssize_t header_size;
 		if ( (header_size = streamer_try_to_extract_mkv_header(client->buffer.ptr, client->buffer.filled)) > 0 ) {
-			fprintf(stderr, "[client %d]: got mkv header\n", client_fd);
+			debug("[stream %s] got complete MKV header (%zd bytes)", client->stream->name, header_size);
 			
 			// Got the complete header in the buffer, calculate size for HTTP chunked encoding encapsulation
 			size_t http_encapsulated_size = streamer_calculate_http_encapsulated_size(header_size);
@@ -332,8 +343,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			client->stream->header.ptr = malloc(http_encapsulated_size);
 			
 			int enc_bytes = snprintf(client->stream->header.ptr, http_encapsulated_size, "%zx\r\n", header_size);
-			printf("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
-				enc_bytes, header_size, http_encapsulated_size, http_encapsulated_size - header_size);
+			//debug("enc_bytes: %d, payload: %zu, http enc: %zu, diff: %zu\n",
+			//	enc_bytes, header_size, http_encapsulated_size, http_encapsulated_size - header_size);
 			//memset(client->stream->header.ptr + enc_bytes, 0, header_size);
 			memcpy(client->stream->header.ptr + enc_bytes, client->buffer.ptr, header_size);
 			client->stream->header.ptr[enc_bytes + header_size + 0] = '\r';
@@ -352,7 +363,6 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				goto return_to_server_to_poll_for_io;
 		} else {
 			// Header not yet complete, need more data
-			fprintf(stderr, "[client %d]: no mkv header yet\n", client_fd);
 			goto return_to_server_to_poll_for_io;
 		}
 	}
@@ -368,21 +378,21 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			if (client->buffer.filled == client->buffer.size) {
 				client->buffer.size *= 2;
 				client->buffer.ptr = realloc(client->buffer.ptr, client->buffer.size);
-				fprintf(stderr, "[client %d]: increased client buffer to %zu bytes\n", client_fd, client->buffer.size);
+				debug("[client %d] increased client buffer to %zu bytes", client_fd, client->buffer.size);
 			}
 			
 			bytes_read = read(client_fd, client->buffer.ptr + client->buffer.filled, client->buffer.size - client->buffer.filled);
 			if (bytes_read > 0) {
 				client->buffer.filled += bytes_read;
-				fprintf(stderr, "[client %d]: reading %zd cluster bytes, %zu bytes left in buffer\n", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
+				debug("[client %d] reading %zd cluster bytes, %zu bytes left in buffer", client_fd, bytes_read, client->buffer.size - client->buffer.filled);
 			} else if (bytes_read == -1 && errno == EWOULDBLOCK) {
 				// No more data in this sockets receive buffer
 				break;
 			} else if (bytes_read == 0) {
-				fprintf(stderr, "[client %d]: read returned 0, disconnecting\n", client_fd);
+				debug("[client %d] read returned 0, disconnecting", client_fd);
 				goto leave_receive_stream;
 			} else {
-				perror("read");
+				debug("[client %d] read error: %s", client_fd, strerror(errno));
 				goto leave_receive_stream;
 			}
 		}
@@ -411,6 +421,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			char*  patched_buffer_ptr = NULL;
 			size_t patched_buffer_size = 0;
 			streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size);
+			debug("[stream %s] received new cluster (%zd bytes)", client->stream->name, cluster_size);
 			
 			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
 			stream_buffer_new_http_encapsulated(stream_buffer, patched_buffer_ptr, patched_buffer_size, 0);
@@ -424,8 +435,6 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			memmove(client->buffer.ptr, client->buffer.ptr + cluster_size, client->buffer.filled - cluster_size);
 			client->buffer.filled -= cluster_size;
 			
-			fprintf(stderr, "[client %d]: received new cluster (%zd bytes)\n", client_fd, cluster_size);
-			
 			// Update all clients of this stream that already ran out of data
 			for(hash_elem_t e = hash_start(server->clients); e != NULL; e = hash_next(server->clients, e)) {
 				client_p iteration_client = hash_value_ptr(e);
@@ -433,13 +442,18 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 					// Make sure the buffer is referenced by all clients watching this stream (and not by our self again)
 					stream_buffer_ref(stream_buffer);
 					
+					if (iteration_client->insert_next_received_cluster_buffer) {
+						*iteration_client->insert_next_received_cluster_buffer = client->stream->stream_buffers->last;
+						iteration_client->insert_next_received_cluster_buffer = NULL;
+					}
+					
 					if (iteration_client->flags & CLIENT_STALLED) {
 						iteration_client->current_stream_buffer = client->stream->stream_buffers->last;
 						iteration_client->buffer.ptr = stream_buffer->ptr;
 						iteration_client->buffer.size = stream_buffer->size;
 						iteration_client->flags |= CLIENT_POLL_FOR_WRITE;
 						iteration_client->flags &= ~CLIENT_STALLED;
-						fprintf(stderr, "[client %d]: unstalled client %d\n", client_fd, (int)hash_key(e));
+						debug("[stream %s] unstalled client %d", client->stream->name, (int)hash_key(e));
 					}
 				}
 			}
@@ -458,12 +472,18 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		if (flags & CLIENT_CON_CLEANUP) {
 			// Update the prev source offset so we properly patch the cluster timecodes
 			// as soon as the source reconnects and sends us new clusters.
-			printf("prev_sources_offset: %lu\n", client->stream->prev_sources_offset);
 			client->stream->prev_sources_offset += client->stream->last_observed_timecode;
-			printf("prev_sources_offset: %lu, lotc: %lu\n", client->stream->prev_sources_offset, client->stream->last_observed_timecode);
+			debug("[stream %s] source died, last observed timecode: %lu, new stream timecode offset: %lu",
+				client->stream->name, client->stream->last_observed_timecode, client->stream->prev_sources_offset);
 			
 			// Remember when the last data arrived so we know how old the stream is
 			client->stream->last_disconnect_at = time_now();
+			
+			// Free malloced stuff
+			free(client->method);
+			client->method = NULL;
+			free(client->resource);
+			client->resource = NULL;
 		}
 		goto disconnect;
 	
@@ -499,6 +519,10 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		intro_cluster_node->prev = video_header_node;
 		intro_cluster_node->next = NULL;
 		
+		// Make sure we get a pointer to the next cluster buffer when one
+		// arives before we're stalled.
+		client->insert_next_received_cluster_buffer = &intro_cluster_node->next;
+		
 		stream_buffer_p http_header_buffer = list_value_ptr(http_header_node);
 		char* http_response_header_text = ""
 			"HTTP/1.1 200 OK\r\n"
@@ -533,7 +557,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 					if (errno == EAGAIN) {
 						goto return_to_server_to_poll_for_io;
 					} else {
-						perror("write");
+						warn("[client %d] write error: %s", client_fd, strerror(errno));
 						goto leave_send_stream;
 					}
 				}
@@ -544,6 +568,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			// We finished writing this buffer (otherwise we would've returned on an EAGAIN).
 			// Unref the finished buffer and free the list node of it when the unref freed the buffer.
+			debug("[client %d] finished buffer %p, next %p", client_fd,
+				list_value_ptr(client->current_stream_buffer), list_value_ptr(client->current_stream_buffer->next));
 			list_node_p next_stream_buffer_node = client->current_stream_buffer->next;
 			
 			stream_buffer_p finished_stream_buffer = list_value_ptr(client->current_stream_buffer);
@@ -556,15 +582,16 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			if (next_stream_buffer_node) {
 				stream_buffer_p next_stream_buffer = list_value_ptr(next_stream_buffer_node);
-				printf("btc: %ld, lctc: %ld\n", next_stream_buffer->timecode, client->stream->latest_cluster_received_at);
+				//debug("btc: %ld, lctc: %ld\n", next_stream_buffer->timecode, client->stream->latest_cluster_received_at);
 				
 				if (next_stream_buffer->timecode + 30 * 1000000LL < client->stream->latest_cluster_received_at) {
-					// Client is to far behind, try to bring him up to date again by throwing all
-					// the buffers away and continuing with a new intro cluster.
-					printf("[client %d] client to far behind, disconnecting\n", client_fd);
+					info("[client %d] client to far behind, disconnecting", client_fd);
 					client->current_stream_buffer = next_stream_buffer_node;
 					goto disconnect;
 					/*
+					// Client is to far behind, try to bring him up to date again by throwing all
+					// the buffers away and continuing with a new intro cluster.
+					
 					for(list_node_p n = next_stream_buffer_node; n != NULL; n = n->next) {
 						stream_buffer_p stream_buffer = list_value_ptr(n);
 						if ( stream_buffer_unref(stream_buffer) == true ) {
@@ -582,7 +609,6 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 					next_stream_buffer_node = intro_cluster_node;
 					*/
 				}
-				
 			}
 			
 			// Wire up the next buffer or stall
@@ -591,11 +617,11 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				stream_buffer_p stream_buffer = list_value_ptr(client->current_stream_buffer);
 				client->buffer.ptr  = stream_buffer->ptr;
 				client->buffer.size = stream_buffer->size;
-				printf("[client %d] next buffer\n", client_fd);
 			} else {
 				client->flags |= CLIENT_STALLED;
 				client->flags &= ~CLIENT_POLL_FOR_WRITE;
-				printf("[client %d] stalled\n", client_fd);
+				client->insert_next_received_cluster_buffer = NULL;
+				debug("[client %d] stalled", client_fd);
 				goto return_to_server_to_poll_for_io;
 			}
 		}
@@ -648,7 +674,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				if (errno == EAGAIN) {
 					break;
 				} else {
-					perror("write");
+					warn("[client %d] write error: %s", client_fd, strerror(errno));
 					goto free_client_buffer_and_disconnect;
 				}
 			}
@@ -690,9 +716,8 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 //
 
 static void http_request_handle_headline(client_p client, char* verb, char* resource, char* version) {
-	//printf("HTTP verb: %s resource: %s version: %s\n", verb, resource, version);
-	
 	client->resource = strdup(resource);
+	client->method = strdup(verb);
 	if ( strcmp(verb, "POST") == 0 )
 		client->flags |= CLIENT_IS_POST_REQUEST;
 }
@@ -716,13 +741,14 @@ static void http_request_handle_header(client_p client, char* name, char* value)
 	*/
 }
 
-static void* http_request_dispatch(client_p client, server_p server,
+static void* http_request_dispatch(client_p client, int client_fd, server_p server,
 		void* enter_send_buffer_and_disconnect,
 		void* enter_receive_stream,
 		void* enter_send_stream,
 		void* enter_status_info
 ) {
-	printf("dispatching %s...\n", client->resource);
+	info("[client %d] dispatching %s %s", client_fd, client->method, client->resource);
+	
 	if ( strcmp(client->resource, "/") == 0 || strcmp(client->resource, "/index.json") == 0 ) {
 		return enter_status_info;
 	}
@@ -735,6 +761,12 @@ static void* http_request_dispatch(client_p client, server_p server,
 		return enter_send_stream;
 	}
 	
+	// We don't need those
+	free(client->method);
+	client->method = NULL;
+	free(client->resource);
+	client->resource = NULL;
+	
 	client->buffer.ptr = ""
 		"HTTP/1.0 404 Not Found\r\n"
 		"Server: smeb v1.0.0\r\n"
@@ -746,88 +778,6 @@ static void* http_request_dispatch(client_p client, server_p server,
 	return enter_send_buffer_and_disconnect;
 }
 
-/*
-static void streamer_prepare_video_header(client_p client) {
-	AVFormatContext* demuxer = client->stream->demuxer;
-	
-	FILE* f = open_memstream(&client->stream->header.ptr, &client->stream->header.size);
-	long o1, o2, o3, o4;
-	
-	o1 = ebml_element_start(f, MKV_EBML);
-		ebml_element_string(f, MKV_DocType, "webm");
-	ebml_element_end(f, o1);
-	
-	// Should actually be an element with unknown size but the ebml viewer program
-	// can't handle it. Therefore disabled for easier debugging.
-	//ebml_element_start_unkown_data_size(f, MKV_Segment);
-	ebml_element_start_unkown_data_size(f, MKV_Segment);
-		o2 = ebml_element_start(f, MKV_Info);
-			ebml_element_uint(f, MKV_TimecodeScale, 1000000);
-			ebml_element_string(f, MKV_MuxingApp, "smeb v0.1");
-			ebml_element_string(f, MKV_WritingApp, "smeb v0.1");
-		ebml_element_end(f, o2);
-		
-		o2 = ebml_element_start(f, MKV_Tracks);
-			
-			printf("stream: found %d tracks:\n", demuxer->nb_streams);
-			for(size_t i = 0; i < demuxer->nb_streams; i++) {
-				AVStream* stream = demuxer->streams[i];
-				
-				o3 = ebml_element_start(f, MKV_TrackEntry);
-					ebml_element_uint(f, MKV_TrackNumber, i);
-					ebml_element_uint(f, MKV_TrackUID, i);
-					ebml_element_uint(f, MKV_FlagLacing, 1);
-					ebml_element_string(f, MKV_Language, "und");
-					
-					switch (stream->codec->codec_type) {
-						case AVMEDIA_TYPE_VIDEO:
-							printf("   video, w: %d, h: %d, sar: %d/%d, %dx%d\n",
-								stream->codec->width, stream->codec->height, stream->sample_aspect_ratio.num, stream->sample_aspect_ratio.den,
-								stream->codec->width * stream->sample_aspect_ratio.num / stream->sample_aspect_ratio.den, stream->codec->height);
-							
-							if (stream->codec->codec_id != AV_CODEC_ID_VP8)
-								printf("  UNSUPPORTED CODEC!\n");
-							
-							ebml_element_uint(f, MKV_TrackType, MKV_TrackType_Video);
-							ebml_element_string(f, MKV_CodecID, "V_VP8");
-							
-							o4 = ebml_element_start(f, MKV_Video);
-								ebml_element_uint(f, MKV_PixelWidth, stream->codec->width);
-								ebml_element_uint(f, MKV_PixelHeight, stream->codec->height);
-								ebml_element_uint(f, MKV_DisplayWidth, stream->codec->width * stream->sample_aspect_ratio.num / stream->sample_aspect_ratio.den);
-								ebml_element_uint(f, MKV_DisplayHeight, stream->codec->height);
-								ebml_element_uint(f, MKV_DisplayUnit, MKV_DisplayUnit_DisplayAspectRatio);
-							ebml_element_end(f, o4);
-							
-							break;
-						case AVMEDIA_TYPE_AUDIO:
-							printf("   audio, %d channels, sampel rate: %d, bits per sample: %d\n",
-								stream->codec->channels, stream->codec->sample_rate, stream->codec->bits_per_coded_sample);
-							
-							if (stream->codec->codec_id != AV_CODEC_ID_VORBIS)
-								printf("  UNSUPPORTED CODEC!\n");
-							
-							ebml_element_uint(f, MKV_TrackType, MKV_TrackType_Audio);
-							ebml_element_string(f, MKV_CodecID, "A_VORBIS");
-							
-							o4 = ebml_element_start(f, MKV_Audio);
-								ebml_element_float(f, MKV_SamplingFrequency, stream->codec->sample_rate);
-								ebml_element_uint(f, MKV_Channels, stream->codec->channels);
-								ebml_element_uint(f, MKV_BitDepth, stream->codec->bits_per_coded_sample);
-							ebml_element_end(f, o4);
-							
-							break;
-						default:
-							break;
-					}
-				ebml_element_end(f, o3);
-			}
-			
-		ebml_element_end(f, o2);
-	fclose(f);
-}
-*/
-
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size) {
 	size_t buffer_pos = 0;
 	
@@ -836,7 +786,7 @@ static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffe
 		size_t pos = 0;
 		id = ebml_read_element_id(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
 		if (pos == 0) {
-			printf("failed to read element id\n");
+			debug("  failed to read element id");
 			return -1;
 		}
 		buffer_pos += pos;
@@ -844,13 +794,13 @@ static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffe
 		pos = 0;
 		uint64_t size = ebml_read_data_size(buffer_ptr + buffer_pos, buffer_size - buffer_pos, &pos);
 		if (pos == 0) {
-			printf("failed to read data size\n");
+			debug("  failed to read data size");
 			return -1;
 		}
 		buffer_pos += pos;
 		
 		if (id == MKV_Segment) {
-			printf("<Segment 0x%08lX bytes>, patching to unknown size, entering\n", size);
+			debug("  <Segment 0x%08lX bytes>, patching to unknown size, entering", size);
 			// Add a leading 0 bit for each addidional size byte, then convert to big endian so
 			// we can directly copy it over the old size.
 			uint64_t unknown_size = __builtin_bswap64(0xffffffffffffffff >> (pos - 1));
@@ -859,12 +809,12 @@ static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffe
 		}
 		
 		if (buffer_pos + size > buffer_size) {
-			printf("failed to read element data of <0x%08X %zu bytes>\n", id, size);
+			debug("  failed to read element data of <0x%08X %zu bytes>", id, size);
 			return -1;
 		}
 		buffer_pos += size;
 		
-		printf("<0x%08X %zu bytes>\n", id, size);
+		debug("  <0x%08X %zu bytes>", id, size);
 	} while (id != MKV_Tracks);
 	
 	return buffer_pos;
@@ -879,7 +829,7 @@ static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buff
 		if (element.id == 0)
 			return -1;
 		
-		printf("<0x%08X %zu bytes>\n", element.id, element.data_size);
+		//debug("  <0x%08X %zu bytes>\n", element.id, element.data_size);
 	} while (element.id != MKV_Cluster);
 	
 	return buffer_pos;
@@ -1069,7 +1019,7 @@ static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, 
 	
 	stream_buffers_allocated++;
 	stream_bytes_allocated += stream_buffer->size;
-	fprintf(stderr, "[stream buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+	fprintf(stderr, "[buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 }
 
 static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags) {
@@ -1091,11 +1041,12 @@ static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, c
 	
 	stream_buffers_allocated++;
 	stream_bytes_allocated += stream_buffer->size;
-	fprintf(stderr, "[stream buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+	fprintf(stderr, "[buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 }
 
 static void stream_buffer_ref(stream_buffer_p stream_buffer) {
 	stream_buffer->refcount++;
+	fprintf(stderr, "[buffer %p] buffer ref (count %zu)\n", stream_buffer, stream_buffer->refcount);
 }
 
 /**
@@ -1114,11 +1065,11 @@ static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
 		
 		stream_buffers_allocated--;
 		stream_bytes_allocated -= stream_buffer->size;
-		fprintf(stderr, "[stream buffer %p] buffer freed (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+		fprintf(stderr, "[buffer %p] buffer unrefed and freed (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 		return true;
 	}
 	
-	fprintf(stderr, "[stream buffer %p] buffer unrefed\n", stream_buffer);
+	fprintf(stderr, "[buffer %p] buffer unrefed (count %zu)\n", stream_buffer, stream_buffer->refcount);
 	return false;
 }
 

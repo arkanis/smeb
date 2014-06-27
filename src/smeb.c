@@ -89,6 +89,10 @@ int main(int argc, char** argv) {
 	if ( listen(http_server_fd, 3) == -1 )
 		perror("listen"), exit(1);
 	
+	char ip_addr_text[INET6_ADDRSTRLEN];
+	inet_ntop(http_bind_addr.sin_family, &http_bind_addr.sin_addr, ip_addr_text, sizeof(ip_addr_text));
+	info("[server] listening on %s:%d", ip_addr_text, ntohs(http_bind_addr.sin_port));
+	
 	
 	// Setup stuff for the poll loop
 	server_t server;
@@ -106,7 +110,6 @@ int main(int argc, char** argv) {
 	}
 	
 	// Do the poll loop
-	printf("server: willing and able\n");
 	while (true) {
 		size_t non_client_fds = 3;
 		size_t pollfds_length = non_client_fds + server.clients->length;
@@ -137,7 +140,7 @@ int main(int argc, char** argv) {
 			// Consume signal (so SIGTERM will not kill us after unblocking signals)
 			struct signalfd_siginfo infos;
 			if ( read(signals, &infos, sizeof(infos)) == -1 )
-				perror("read from signalfd"), exit(1);
+				warn("[server] failed to consume signal from signalfd: %s", strerror(errno));
 			
 			// Break poll loop
 			break;
@@ -152,7 +155,7 @@ int main(int argc, char** argv) {
 			client_p client = hash_value_ptr(e);
 			
 			if ( pollfds[i].revents & POLLHUP ) {
-				printf("server: client %d disconnected via POLLHUP\n", client_fd);
+				info("[client %d]: disconnected via POLLHUP", client_fd);
 				disconnect_client(client_fd, client, e);
 				continue;
 			}
@@ -162,23 +165,25 @@ int main(int argc, char** argv) {
 			if ( pollfds[i].revents & POLLERR ) {
 				int error = 0;
 				socklen_t error_len = sizeof(error);
-				if ( getsockopt(client_fd, SOL_SOCKET, SO_ERROR, &error, &error_len) == -1 )
-					perror("getsockopt"), exit(1);
-				printf("server: client %d disconnected by error: %s\n", client_fd, strerror(error));
+				if ( getsockopt(client_fd, SOL_SOCKET, SO_ERROR, &error, &error_len) == 0 )
+					warn("[client %d] disconnected because of socket error: %s", client_fd, strerror(error));
+				else
+					warn("[client %d] disconnected because of unknown socket error (failed to get error code with getsockopt(): %s)", client_fd, strerror(errno));
+				
 				disconnect_client(client_fd, client, e);
 				continue;
 			}
 			
 			if ( pollfds[i].revents & POLLIN ) {
 				if ( client_handler(client_fd, client, &server, CLIENT_CON_READABLE) == -1 ) {
-					printf("server: client %d disconnected via client handler\n", client_fd);
+					info("[client %d] disconnected via client handler", client_fd);
 					disconnect_client(client_fd, client, e);
 				}
 			}
 			
 			if ( pollfds[i].revents & POLLOUT ) {
 				if ( client_handler(client_fd, client, &server, CLIENT_CON_WRITABLE) == -1 ) {
-					printf("server: client %d disconnected via client handler\n", client_fd);
+					info("[client %d] disconnected via client handler", client_fd);
 					disconnect_client(client_fd, client, e);
 				}
 			}
@@ -192,12 +197,13 @@ int main(int argc, char** argv) {
 			for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
 				stream_p stream = dict_value_ptr(e);
 				if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + stream_delete_timeout_sec * 1000000LL < time_now()) {
-					printf("deleting stream %s\n", dict_key(e));
+					info("[stream %s] deleting stream, no new data arrived within timeout of %d seconds", dict_key(e), stream_delete_timeout_sec);
 					
 					// First disconnect all clients watching the stream. This also unrefs any remaining stream buffers.
 					for(hash_elem_t ce = hash_start(server.clients); ce != NULL; ce = hash_next(server.clients, ce)) {
 						int client_fd = hash_key(ce);
 						client_p client = hash_value_ptr(ce);
+						info("[client %d] disconnected because stream was deleted", client_fd);
 						disconnect_client(client_fd, client, ce);
 					}
 					
@@ -218,7 +224,7 @@ int main(int argc, char** argv) {
 			if (client_fd == -1)
 				perror("accept4"), exit(1);
 			
-			printf("server: client %d connected\n", client_fd);
+			info("[client %d] connected", client_fd);
 			client_p client = hash_put_ptr(server.clients, client_fd);
 			memset(client, 0, sizeof(client_t));
 			client_handler(client_fd, client, &server, 0);
@@ -227,7 +233,7 @@ int main(int argc, char** argv) {
 	
 	
 	// Clean up time
-	printf("server: cleaning up\n");
+	info("[server] cleaning up");
 	close(http_server_fd);
 	close(timer);
 	close(signals);

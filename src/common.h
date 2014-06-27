@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "hash.h"
 #include "list.h"
+#include "logger.h"
 
 // Simple buffer to handle memory blocks
 typedef struct {
@@ -45,6 +46,7 @@ typedef struct {
 	
 	usec_t last_disconnect_at;
 	dict_p params;
+	char* name;
 	
 	usec_t latest_cluster_received_at;
 	
@@ -69,7 +71,8 @@ typedef struct {
 	// the originally malloced block that was used as buffer.
 	void* buffer_to_free;
 	
-	// A malloced() string containing the resource the client requested.
+	// A malloced() string containing the HTTP method and resource the client requested.
+	char* method;
 	char* resource;
 	
 	// The stream this client is connected to (either as streamer or as viewer)
@@ -77,6 +80,15 @@ typedef struct {
 	
 	// Pointer to the stream buffer node this client currently views
 	list_node_p current_stream_buffer;
+	
+	// If this pointer is not NULL we have to write a pointer to the next received
+	// cluster buffer of this stream there. It's necessary to wire up new clients
+	// to the "main line" of cluster buffers. Otherwise they may miss one or more
+	// clusters while the initial buffers are send to them.
+	// This field is NULLed when a cluster is received (and the pointer was written)
+	// or the client is stalled (in that case the buffer node we wanted to write the
+	// pointer to has been freed and we would overwrite something totally unrelated).
+	list_node_p* insert_next_received_cluster_buffer;
 } client_t, *client_p;
 
 #define CLIENT_POLL_FOR_READ       (1 << 0)

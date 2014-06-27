@@ -15,15 +15,6 @@
 const char* test_file_name = "ebml_reader_test.mkv";
 
 
-void test_new_and_destroy() {
-	int fd = open(test_file_name, O_RDONLY | O_NONBLOCK);
-	ebml_reader_t reader;
-	ebml_reader_new(&reader, fd);
-	
-	ebml_reader_destroy(&reader);
-	close(fd);
-}
-
 void test_read_element_id_with_full_buffer() {
 	uint32_t id = 0;
 	size_t   pos = 0;
@@ -137,66 +128,6 @@ void test_read_data_size_unknown_sizes() {
 	}
 	
 	check_int(pos, buffer_size);
-}
-
-void test_next_event_root_level() {
-	int fd = open(test_file_name, O_RDONLY);
-	ebml_reader_t reader;
-	ebml_reader_new(&reader, fd);
-	
-	ebml_reader_event_t event;
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_START);
-	check(event.id   == MKV_EBML);
-	check(event.size == 7);
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_END);
-	check(event.id   == MKV_EBML);
-	check(event.size == 0);
-	check(event.data == NULL);
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_START);
-	check(event.id   == MKV_Segment);
-	check(event.size == -1);
-	
-	ebml_reader_destroy(&reader);
-	close(fd);
-}
-
-void test_next_event_nested_levels() {
-	int fd = open(test_file_name, O_RDONLY);
-	ebml_reader_t reader;
-	ebml_reader_new(&reader, fd);
-	
-	ebml_reader_event_t event;
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_START);
-	check(event.id   == MKV_EBML);
-	check(event.size == 7);
-	
-	check( ebml_reader_enter(&reader) == true );
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_START);
-	check(event.id   == MKV_DocType);
-	check(event.size == 4);
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_END);
-	check(event.id   == MKV_DocType);
-	check(event.size == 0);
-	
-	check( ebml_reader_next_event(&reader, &event) == true );
-	check_int(event.type, EBML_ELEMENT_END);
-	check(event.id   == MKV_EBML);
-	check(event.size == 0);
-	
-	ebml_reader_destroy(&reader);
-	close(fd);
 }
 
 void test_read_element_and_element_header() {
@@ -325,14 +256,11 @@ static void write_test_file(const char* filename) {
 int main() {
 	write_test_file(test_file_name);
 	
-	run(test_new_and_destroy);
 	run(test_read_element_id_with_full_buffer);
 	run(test_read_element_id_error_cases);
 	run(test_read_data_size_with_full_buffer);
 	run(test_read_data_size_error_cases);
 	run(test_read_data_size_unknown_sizes);
-	run(test_next_event_root_level);
-	///run(test_next_event_nested_levels);
 	run(test_read_element_and_element_header);
 	run(test_read_int_and_uint);
 	
