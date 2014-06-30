@@ -106,4 +106,6 @@ typedef struct {
 	hash_p clients;
 	// List of all streams
 	dict_p streams;
+	
+	int stream_delete_timeout_sec;
 } server_t, *server_p;

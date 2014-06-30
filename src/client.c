@@ -39,7 +39,7 @@ static void* http_request_dispatch       (client_p client, int client_fd, server
 static ssize_t streamer_try_to_extract_mkv_header(void* buffer_ptr, size_t buffer_size);
 static ssize_t streamer_try_to_extract_mkv_cluster(void* buffer_ptr, size_t buffer_size);
 static size_t streamer_calculate_http_encapsulated_size(size_t payload_size);
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size);
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size, server_p server);
 
 static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags);
 static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags);
@@ -197,7 +197,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				}
 				
 				const char* path = dict_key(e);
-				stream_p stream = dict_value_ptr(e);
+				stream_p stream = dict_value(e, stream_p);
 				
 				char buffer[512], buffer_key[512], buffer_value[512];
 				json_escape(path, buffer_key, sizeof(buffer_key));
@@ -238,8 +238,9 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		char* params = client->resource + path_len;
 		
 		if (!client->stream) {
-			client->stream = dict_put_ptr(server->streams, path);
+			client->stream = malloc(sizeof(stream_t));
 			memset(client->stream, 0, sizeof(stream_t));
+			dict_put(server->streams, path, stream_p, client->stream);
 			
 			client->stream->stream_buffers = list_of(stream_buffer_t);
 			client->stream->intro_stream = open_memstream(&client->stream->intro_buffer.ptr, &client->stream->intro_buffer.size);
@@ -251,9 +252,9 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				goto disconnect;
 			}
 			
-			printf("[stream %s] creating new stream", path);
+			info("[stream %s] creating new stream", path);
 		} else {
-			printf("[stream %s] resuming stream", path);
+			info("[stream %s] resuming stream", path);
 			
 			client->stream->last_disconnect_at = 0;
 			// TODO: deep clean old params dict
@@ -420,7 +421,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			char*  patched_buffer_ptr = NULL;
 			size_t patched_buffer_size = 0;
-			streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size);
+			streamer_inspect_cluster(client->buffer.ptr, cluster_size, client->stream, &patched_buffer_ptr, &patched_buffer_size, server);
 			debug("[stream %s] received new cluster (%zd bytes)", client->stream->name, cluster_size);
 			
 			stream_buffer_p stream_buffer = list_append_ptr(client->stream->stream_buffers);
@@ -747,13 +748,17 @@ static void* http_request_dispatch(client_p client, int client_fd, server_p serv
 		void* enter_send_stream,
 		void* enter_status_info
 ) {
-	info("[client %d] dispatching %s %s", client_fd, client->method, client->resource);
+	size_t path_len = strcspn(client->resource, "?");
+	char* path = strndup(client->resource, path_len);
 	
-	if ( strcmp(client->resource, "/") == 0 || strcmp(client->resource, "/index.json") == 0 ) {
+	if ( strcmp(path, "/") == 0 || strcmp(path, "/index.json") == 0 ) {
+		free(path);
 		return enter_status_info;
 	}
 	
-	client->stream = dict_get_ptr(server->streams, client->resource);
+	if (dict_contains(server->streams, path))
+		client->stream = dict_get(server->streams, path, stream_p);
+	free(path);
 	
 	if (client->flags & CLIENT_IS_POST_REQUEST) {
 		return enter_receive_stream;
@@ -845,7 +850,7 @@ static size_t streamer_calculate_http_encapsulated_size(size_t payload_size) {
 	return required_hex_digits + len_of_crlf + payload_size + len_of_crlf;
 }
 
-static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size) {
+static bool streamer_inspect_cluster(void* buffer_ptr, size_t buffer_size, stream_p stream, char** patched_buffer_ptr, size_t* patched_buffer_size, server_p server) {
 	bool keyframe_found = false;
 	size_t pos = 0;
 	uint64_t cluster_timecode = 0;
@@ -1019,7 +1024,7 @@ static void stream_buffer_new(stream_buffer_p stream_buffer, char* content_ptr, 
 	
 	stream_buffers_allocated++;
 	stream_bytes_allocated += stream_buffer->size;
-	fprintf(stderr, "[buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+	debug("[buffer %p] buffer allocated (%zu buffers, %zu bytes)", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 }
 
 static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, char* content_ptr, size_t content_size, uint32_t flags) {
@@ -1041,12 +1046,12 @@ static void stream_buffer_new_http_encapsulated(stream_buffer_p stream_buffer, c
 	
 	stream_buffers_allocated++;
 	stream_bytes_allocated += stream_buffer->size;
-	fprintf(stderr, "[buffer %p] buffer allocated (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+	debug("[buffer %p] buffer allocated (%zu buffers, %zu bytes)", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 }
 
 static void stream_buffer_ref(stream_buffer_p stream_buffer) {
 	stream_buffer->refcount++;
-	fprintf(stderr, "[buffer %p] buffer ref (count %zu)\n", stream_buffer, stream_buffer->refcount);
+	debug("[buffer %p] buffer ref (count %zu)", stream_buffer, stream_buffer->refcount);
 }
 
 /**
@@ -1065,11 +1070,11 @@ static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
 		
 		stream_buffers_allocated--;
 		stream_bytes_allocated -= stream_buffer->size;
-		fprintf(stderr, "[buffer %p] buffer unrefed and freed (%zu buffers, %zu bytes)\n", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
+		debug("[buffer %p] buffer unrefed and freed (%zu buffers, %zu bytes)", stream_buffer, stream_buffers_allocated, stream_bytes_allocated);
 		return true;
 	}
 	
-	fprintf(stderr, "[buffer %p] buffer unrefed (count %zu)\n", stream_buffer, stream_buffer->refcount);
+	debug("[buffer %p] buffer unrefed (count %zu)", stream_buffer, stream_buffer->refcount);
 	return false;
 }
 

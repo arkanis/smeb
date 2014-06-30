@@ -34,8 +34,6 @@ ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -th
 #include "client.h"
 
 
-usec_t stream_delete_timeout_sec = 10;
-
 int main(int argc, char** argv) {
 	if (argc != 3) {
 		fprintf(stderr, "usage: %s bind-addr port\n", argv[0]);
@@ -98,7 +96,8 @@ int main(int argc, char** argv) {
 	server_t server;
 	memset(&server, 0, sizeof(server));
 	server.clients = hash_of(client_t);
-	server.streams = dict_of(stream_t);
+	server.streams = dict_of(stream_p);
+	server.stream_delete_timeout_sec = 15 * 60;
 	
 	// Small helper used multiple times in the poll loop
 	void disconnect_client(int client_fd, client_p client, hash_elem_t e) {
@@ -191,29 +190,34 @@ int main(int argc, char** argv) {
 		
 		if (pollfds[2].revents & POLLIN) {
 			uint64_t expirations;
-			read(timer, &expirations, sizeof(expirations));
+			ssize_t bytes_read = read(timer, &expirations, sizeof(expirations));
 			
-			// Delete expired streams
-			for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
-				stream_p stream = dict_value_ptr(e);
-				if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + stream_delete_timeout_sec * 1000000LL < time_now()) {
-					info("[stream %s] deleting stream, no new data arrived within timeout of %d seconds", dict_key(e), stream_delete_timeout_sec);
-					
-					// First disconnect all clients watching the stream. This also unrefs any remaining stream buffers.
-					for(hash_elem_t ce = hash_start(server.clients); ce != NULL; ce = hash_next(server.clients, ce)) {
-						int client_fd = hash_key(ce);
-						client_p client = hash_value_ptr(ce);
-						info("[client %d] disconnected because stream was deleted", client_fd);
-						disconnect_client(client_fd, client, ce);
+			// If the read failed we just try again on the next poll iteration
+			if (bytes_read == sizeof(expirations)) {
+				
+				// Delete expired streams
+				for(dict_elem_t e = dict_start(server.streams); e != NULL; e = dict_next(server.streams, e)) {
+					stream_p stream = dict_value(e, stream_p);
+					if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + server.stream_delete_timeout_sec * 1000000LL < time_now()) {
+						info("[stream %s] deleting stream, no new data arrived within timeout of %d seconds", dict_key(e), server.stream_delete_timeout_sec);
+						
+						// First disconnect all clients watching the stream. This also unrefs any remaining stream buffers.
+						for(hash_elem_t ce = hash_start(server.clients); ce != NULL; ce = hash_next(server.clients, ce)) {
+							int client_fd = hash_key(ce);
+							client_p client = hash_value_ptr(ce);
+							info("[client %d] disconnected because stream was deleted", client_fd);
+							disconnect_client(client_fd, client, ce);
+						}
+						
+						// Free stream stuff
+						list_destroy(stream->stream_buffers);
+						free(stream->header.ptr);
+						fclose(stream->intro_stream);
+						free(stream->intro_buffer.ptr);
+						
+						dict_remove_elem(server.streams, e);
+						free(stream);
 					}
-					
-					// Free stream stuff
-					list_destroy(stream->stream_buffers);
-					free(stream->header.ptr);
-					fclose(stream->intro_stream);
-					free(stream->intro_buffer.ptr);
-					
-					dict_remove_elem(server.streams, e);
 				}
 			}
 		}
