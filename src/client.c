@@ -204,11 +204,21 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 				snprintf(buffer, sizeof(buffer), "\t\"%s\": {\n", buffer_key);
 				add(buffer);
 				
-				bool first2 = true;
+				// Sum up how many clients are watching this stream
+				uint32_t watch_count = 0;
+				for(hash_elem_t ce = hash_start(server->clients); ce != NULL; ce = hash_next(server->clients, ce)) {
+					client_p iteration_client = hash_value_ptr(ce);
+					if (iteration_client->stream == stream && !(iteration_client->flags & CLIENT_IS_POST_REQUEST))
+						watch_count++;
+				}
+				snprintf(buffer, sizeof(buffer), "\t\t\"viewers\": \"%u\"", watch_count);
+				add(buffer);
+				
+				//bool first2 = true;
 				for(dict_elem_t e = dict_start(stream->params); e != NULL; e = dict_next(stream->params, e)) {
-					if (first2)
-						first2 = false;
-					else
+					//if (first2)
+					//	first2 = false;
+					//else
 						add(",\n");
 					
 					json_escape(dict_key(e), buffer_key, sizeof(buffer_key));
