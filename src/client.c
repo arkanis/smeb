@@ -28,7 +28,7 @@ static void    local_buffer_backup_to_client_buffer(buffer_p local_buffer, clien
 static ssize_t first_line_length                   (buffer_p local_buffer);
 
 static void  http_request_handle_headline(client_p client, char* verb, char* resource, char* version);
-static void  http_request_handle_header  (client_p client, char* name, char* value);
+static void  http_request_handle_header  (client_p client, int client_fd, char* name, char* value);
 static void* http_request_dispatch       (client_p client, int client_fd, server_p server,
 	void* enter_send_buffer_and_disconnect,
 	void* enter_receive_stream,
@@ -141,7 +141,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			
 			// Only process correct header lines, skip incorrect ones
 			if (matched_items == 2) {
-				http_request_handle_header(client, name, value);
+				http_request_handle_header(client, client_fd, name, value);
 			}
 			
 			local_buffer.ptr  += line_length;
@@ -733,10 +733,14 @@ static void http_request_handle_headline(client_p client, char* verb, char* reso
 		client->flags |= CLIENT_IS_POST_REQUEST;
 }
 
-static void http_request_handle_header(client_p client, char* name, char* value) {
+static void http_request_handle_header(client_p client, int client_fd, char* name, char* value) {
 	//printf("HTTP header, %s: %s\n", name, value);
+	if ( strcmp(name, "User-Agent") == 0 ) {
+		info("[client %d] User-Agent: %s", client_fd, value);
+	}
+	
 	/*
-	if ( strcmp(name, "Authorization") ) {
+	if ( strcmp(name, "Authorization") == 0 ) {
 		int b64_start = 0, b64_end = 0;
 		sscanf(value, " Basic %n%*s%n", &b64_start, &b64_end);
 		if (b64_start > 0 && b64_end > b64_start) {

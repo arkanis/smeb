@@ -17,6 +17,7 @@ void logger_message(int level, const char *file, int line, const char *func, con
 	
 	char *label = NULL;
 	switch(level) {
+		case LOG_DEBUG: label = "debug"; break;
 		case LOG_WARN:  label = "warn";  break;
 		case LOG_ERROR: label = "error"; break;
 	}

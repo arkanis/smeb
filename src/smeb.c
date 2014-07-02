@@ -40,6 +40,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	
+	logger_setup(LOG_DEBUG);
+	
 	// Setup SIGINT and SIGTERM to terminate our poll loop. For that we read them via a signal fd.
 	// To prevent the signals from interrupting our process we need to block them first.
 	sigset_t signal_mask;
