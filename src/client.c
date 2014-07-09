@@ -763,15 +763,21 @@ static void* http_request_dispatch(client_p client, int client_fd, server_p serv
 		void* enter_status_info
 ) {
 	size_t path_len = strcspn(client->resource, "?");
-	char* path = strndup(client->resource, path_len);
+	char* urlencoded_path = strndup(client->resource, path_len);
+		char* path = malloc(path_len);
+		urldecode(urlencoded_path, path);
+	free(urlencoded_path);
 	
 	if ( strcmp(path, "/") == 0 || strcmp(path, "/index.json") == 0 ) {
 		free(path);
 		return enter_status_info;
 	}
-	
-	if (dict_contains(server->streams, path))
+
+	printf("DICT: %s %d\n", path, dict_contains(server->streams, path));	
+	if (dict_contains(server->streams, path)) {
 		client->stream = dict_get(server->streams, path, stream_p);
+		printf("DICT2: %p\n", dict_get(server->streams, path, stream_p));
+	}
 	free(path);
 	
 	if (client->flags & CLIENT_IS_POST_REQUEST) {
@@ -1098,6 +1104,7 @@ static bool stream_buffer_unref(stream_buffer_p stream_buffer) {
  * Code by ThomasH, taken from http://stackoverflow.com/a/14530993
  * Added: Replaced '+' with ' '.
  */
+/*
 static void urldecode(const char *src, char *dst) {
 	char a, b;
 	while (*src) {
@@ -1122,6 +1129,44 @@ static void urldecode(const char *src, char *dst) {
 			*dst++ = *src++;
 		}
 	}
+	*dst++ = '\0';
+}
+*/
+
+static void urldecode(const char *src, char *dst) {
+	while (*src) {
+		if (*src != '%')
+		{
+		    *dst++ = *src++;
+		    continue;
+		}
+		
+		if (!isxdigit(src[1]) || !isxdigit(src[2]))
+		{
+		    *dst++ = *src++;
+		    continue;
+		}
+		
+		char a = src[1], b = src[2];
+		
+		if (a >= '0' && a <= '9')
+			a = a - '0';
+		else if (a >= 'A' && a <= 'F')
+			a = 10 + (a - 'A');
+		else if (a >= 'a' && a <= 'f')
+			a = 10 + (a - 'a');
+		
+		if (b >= '0' && b <= '9')
+			b = b - '0';
+		else if (b >= 'A' && b <= 'F')
+			b = 10 + (b - 'A');
+		else if (a >= 'a' && b <= 'f')
+			b = 10 + (b - 'a');
+		
+		*dst++ = a * 16 + b;
+		src += 3;
+	}
+	
 	*dst++ = '\0';
 }
 
