@@ -203,12 +203,14 @@ int main(int argc, char** argv) {
 					if (stream->last_disconnect_at != 0 && stream->last_disconnect_at + server.stream_delete_timeout_sec * 1000000LL < time_now()) {
 						info("[stream %s] deleting stream, no new data arrived within timeout of %d seconds", dict_key(e), server.stream_delete_timeout_sec);
 						
-						// First disconnect all clients watching the stream. This also unrefs any remaining stream buffers.
+						// First disconnect all clients watching that stream. This also unrefs any remaining stream buffers.
 						for(hash_elem_t ce = hash_start(server.clients); ce != NULL; ce = hash_next(server.clients, ce)) {
 							int client_fd = hash_key(ce);
 							client_p client = hash_value_ptr(ce);
-							info("[client %d] disconnected because stream was deleted", client_fd);
-							disconnect_client(client_fd, client, ce);
+							if (client->stream == stream) {
+								info("[client %d] disconnected because stream was deleted", client_fd);
+								disconnect_client(client_fd, client, ce);
+							}
 						}
 						
 						// Free stream stuff
