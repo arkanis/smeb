@@ -35,12 +35,33 @@ ffmpeg -re -i hd-video.mkv -quality realtime -minrate 1M -maxrate 1M -b:v 1M -th
 
 
 int main(int argc, char** argv) {
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s bind-addr port\n", argv[0]);
+	if (argc != 5) {
+		fprintf(stderr, "usage: %s bind-addr port log-level stream-timeout-in-sec\n", argv[0]);
 		return 1;
 	}
 	
-	logger_setup(LOG_DEBUG);
+	uint32_t timeout = 0;
+	if ( sscanf(argv[4], "%u", &timeout) != 1 ) {
+		fprintf(stderr, "invalid timeout argument: %s\n", argv[4]);
+		return 1;
+	}
+	printf("%u\n", timeout);
+	
+	int log_level = LOG_WARN;
+	if ( strcmp(argv[3], "debug") == 0 )
+		log_level = LOG_DEBUG;
+	else if ( strcmp(argv[3], "info") == 0 )
+		log_level = LOG_INFO;
+	else if ( strcmp(argv[3], "warn") == 0 )
+		log_level = LOG_WARN;
+	else if ( strcmp(argv[3], "error") == 0 )
+		log_level = LOG_ERROR;
+	else {
+		fprintf(stderr, "unknown debug level: %s\n", argv[3]);
+		return 1;
+	}
+	
+	logger_setup(log_level);
 	
 	// Setup SIGINT and SIGTERM to terminate our poll loop. For that we read them via a signal fd.
 	// To prevent the signals from interrupting our process we need to block them first.
@@ -99,7 +120,7 @@ int main(int argc, char** argv) {
 	memset(&server, 0, sizeof(server));
 	server.clients = hash_of(client_t);
 	server.streams = dict_of(stream_p);
-	server.stream_delete_timeout_sec = 15 * 60;
+	server.stream_delete_timeout_sec = timeout; //15 * 60;
 	
 	// Small helper used multiple times in the poll loop
 	void disconnect_client(int client_fd, client_p client, hash_elem_t e) {
