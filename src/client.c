@@ -496,7 +496,7 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 			free(client->resource);
 			client->resource = NULL;
 		}
-		goto disconnect;
+		goto free_client_buffer_and_disconnect;
 	
 	
 	
