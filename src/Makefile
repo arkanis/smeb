@@ -7,7 +7,7 @@ CFLAGS = -std=c99 -Werror -Wall -Wextra -Wno-unused-parameter
 
 # Use a simply expanded variable to avoid endless recursion in value substitution, see
 # http://www.gnu.org/savannah-checkouts/gnu/make/manual/html_node/Flavors.html
-CFLAGS := $(CFLAGS) -g
+CFLAGS := $(CFLAGS) -g -fstack-protector -D_FORTIFY_SOURCE=2
 #CFLAGS := $(CFLAGS) -O3
 
 
