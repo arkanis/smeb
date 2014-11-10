@@ -242,6 +242,10 @@ int main(int argc, char** argv) {
 	
 	// Clean up time
 	info("[server] cleaning up");
+	
+	hash_destroy(server.clients);
+	dict_destroy(server.streams);
+	
 	close(http_server_fd);
 	close(timer);
 	close(signals);
