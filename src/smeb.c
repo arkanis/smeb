@@ -45,7 +45,6 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "invalid timeout argument: %s\n", argv[4]);
 		return 1;
 	}
-	printf("%u\n", timeout);
 	
 	int log_level = LOG_WARN;
 	if ( strcmp(argv[3], "debug") == 0 )
