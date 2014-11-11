@@ -639,13 +639,15 @@ int client_handler(int client_fd, client_p client, server_p server, int flags) {
 		
 	leave_send_stream:
 		// Unref all buffers that this client would have received
-		for(list_node_p n = client->current_stream_buffer; n != NULL; n = n->next) {
-			stream_buffer_p stream_buffer = list_value_ptr(n);
+		for(list_node_p node = client->current_stream_buffer, next = NULL; node != NULL; node = next) {
+			next = node->next;
+			
+			stream_buffer_p stream_buffer = list_value_ptr(node);
 			if ( stream_buffer_unref(stream_buffer) == true ) {
 				if (stream_buffer->flags & STREAM_BUFFER_CLIENT_PRIVATE)
-					free(n);
+					free(node);
 				else
-					list_remove(client->stream->stream_buffers, n);
+					list_remove(client->stream->stream_buffers, node);
 			}
 		}
 		
