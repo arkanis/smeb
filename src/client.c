@@ -764,7 +764,7 @@ static void* http_request_dispatch(client_p client, int client_fd, server_p serv
 ) {
 	size_t path_len = strcspn(client->resource, "?");
 	char* urlencoded_path = strndup(client->resource, path_len);
-		char* path = malloc(path_len);
+		char* path = malloc(path_len + 1);
 		urldecode(urlencoded_path, path);
 	free(urlencoded_path);
 	
